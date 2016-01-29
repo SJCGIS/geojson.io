@@ -1,6 +1,6 @@
 module.exports = function(hostname) {
     // Settings for geojson.io
-    L.mapbox.accessToken = 'pk.eyJ1IjoibWFwYm94IiwiYSI6IlpIdEpjOHcifQ.Cldl4wq_T5KOgxhLvbjE-w';
+    L.mapbox.accessToken = 'pk.eyJ1IjoibnBlaWhsIiwiYSI6ImNpazBjMXF4ajM4dHN2dGx6Y3Y5YXVjbW8ifQ.Wkcx1rBYaBz1y-XaF6-zTQ';
     if (hostname === 'geojson.io') {
         return {
             client_id: '62c753fd0faf18392d85',
