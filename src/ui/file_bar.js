@@ -4,8 +4,8 @@ var shpwrite = require('shp-write'),
     topojson = require('topojson'),
     saveAs = require('filesaver.js'),
     tokml = require('tokml'),
-    githubBrowser = require('github-file-browser'),
-    gistBrowser = require('gist-map-browser'),
+    githubBrowser = require('@mapbox/github-file-browser'),
+    gistBrowser = require('@mapbox/gist-map-browser'),
     geojsonNormalize = require('geojson-normalize'),
     wellknown = require('wellknown');
 
@@ -117,6 +117,30 @@ module.exports = function fileBar(context) {
                     alt: 'Flatten MultiPolygons, MultiLines, and GeometryCollections into simple geometries',
                     action: function() {
                         meta.flatten(context);
+                    }
+                }, {
+                    title: 'Load encoded polyline',
+                    alt: 'Decode and show an encoded polyline. Precision 5 is supported.',
+                    action: function() {
+                        meta.polyline(context);
+                    }
+                }, {
+                    title: 'Load WKB Base64 Encoded String',
+                    alt: 'Decode and show WKX data',
+                    action: function() {
+                        meta.wkxBase64(context);
+                    }
+                }, {
+                    title: 'Load WKB Hex Encoded String',
+                    alt: 'Decode and show WKX data',
+                    action: function() {
+                        meta.wkxHex(context);
+                    }
+                }, {
+                    title: 'Load WKT String',
+                    alt: 'Decode and show WKX data',
+                    action: function() {
+                        meta.wkxString(context);
                     }
                 }
             ]
@@ -279,7 +303,7 @@ module.exports = function fileBar(context) {
                     if (last.type === 'blob') {
                         githubBrowser.request('/repos/' + d[1].full_name +
                             '/git/blobs/' + last.sha, function(err, blob) {
-                                d.content = JSON.parse(atob(blob[0].content));
+                                d.content = JSON.parse(decodeURIComponent(Array.prototype.map.call(atob(blob[0].content), function(c) { return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2); }).join('')));
                                 context.data.parse(d);
                                 zoomextent(context);
                                 m.close();
@@ -312,16 +336,20 @@ module.exports = function fileBar(context) {
                 .onclick(function(d) {
                     if (!d || !d.length) return;
                     var last = d[d.length - 1];
-                    if (last.type === 'new') {
+                    var pathparts;
+                    var partial;
+
+                    // New file
+                    if (last.type === 'new')  {
                         var filename = prompt('New file name');
                         if (!filename) {
                             m.close();
                             return;
                         }
-                        var pathparts = d.slice(3);
+                        pathparts = d.slice(3);
                         pathparts.pop();
                         pathparts.push({ path: filename });
-                        var partial = pathparts.map(function(p) {
+                        partial = pathparts.map(function(p) {
                             return p.path;
                         }).join('/');
                         context.data.set({
@@ -341,8 +369,34 @@ module.exports = function fileBar(context) {
                         context.data.set({ newpath: partial + filename });
                         m.close();
                         saver(context);
-                    } else {
-                        alert('overwriting existing files is not yet supported');
+                    }
+                    // Update a file
+                    else if (last.type === 'blob') {
+                        // Build the path
+                        pathparts = d.slice(3);
+                        partial = pathparts.map(function(p) {
+                            return p.path;
+                        }).join('/');
+
+
+                        context.data.set(
+                        {
+                            source: {
+                                url: githubBase + '/repos/' +
+                                    d[0].login + '/' + d[1].name +
+                                        '/contents/' + partial +
+                                        '?ref=' + d[2].name,
+                                sha: last.sha
+                            },
+                            type: 'github',
+                            meta: {
+                                branch: d[2].name,
+                                login: d[0].login,
+                                repo: d[1].name
+                            }
+                        });
+                        m.close();
+                        saver(context);
                     }
                 })
                 .appendTo(

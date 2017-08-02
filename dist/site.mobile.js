@@ -1,4 +1,4 @@
-require=(function e(t,n,r){function s(o,u){if(!n[o]){if(!t[o]){var a=typeof require=="function"&&require;if(!u&&a)return a(o,!0);if(i)return i(o,!0);throw new Error("Cannot find module '"+o+"'")}var f=n[o]={exports:{}};t[o][0].call(f.exports,function(e){var n=t[o][1][e];return s(n?n:e)},f,f.exports,e,t,n,r)}return n[o].exports}var i=typeof require=="function"&&require;for(var o=0;o<r.length;o++)s(r[o]);return s})({1:[function(require,module,exports){
+require=(function e(t,n,r){function s(o,u){if(!n[o]){if(!t[o]){var a=typeof require=="function"&&require;if(!u&&a)return a(o,!0);if(i)return i(o,!0);var f=new Error("Cannot find module '"+o+"'");throw f.code="MODULE_NOT_FOUND",f}var l=n[o]={exports:{}};t[o][0].call(l.exports,function(e){var n=t[o][1][e];return s(n?n:e)},l,l.exports,e,t,n,r)}return n[o].exports}var i=typeof require=="function"&&require;for(var o=0;o<r.length;o++)s(r[o]);return s})({1:[function(require,module,exports){
 module.exports=[
     {
         "name": "Circle stroked",
@@ -1234,6 +1234,282 @@ module.exports=[
 ]
 
 },{}],2:[function(require,module,exports){
+var request = require('browser-request'),
+    token;
+
+var base = 'https://api.github.com';
+
+module.exports = function(_, endpoint) {
+    token = _;
+    base = endpoint || base;
+    return module.exports;
+};
+
+module.exports.open = open;
+
+function ce(t, k) {
+    var elem = document.createElement(t);
+    if (k) elem.className = k;
+    return elem;
+}
+
+function open() {
+    var container = ce('div', 'gist-map-browser'),
+        p = 0;
+
+    function loadPage() {
+        page('/gists?page=' + p, function(err, res) {
+            if (err) throw err;
+            res.filter(isMap).forEach(append);
+            appendNext();
+        });
+    }
+
+    var onclick = function(elem) { };
+
+    function isMap(gist) {
+        var is = false;
+        for (var i in gist.files) {
+            if (i.match(/\.(geo)?json/i)) is = true;
+        }
+        return is;
+    }
+
+    function appendNext(n) {
+        var olds = container.getElementsByClassName('gist-map-next');
+        for (var i = 0; i < olds.length; i++) { olds[i].parentNode.removeChild(olds[i]); }
+        var c = container.appendChild(ce('div', 'gist-map-next'));
+        c.innerHTML = 'load more';
+        c.onclick = function() {
+            p++;
+            loadPage();
+        };
+    }
+
+    function append(gist) {
+        var c = container.appendChild(ce('div', 'gist-map-item'));
+        var t = c.appendChild(ce('div', 'gist-map-title'));
+        t.textContent = gist.description;
+        var contents = c.appendChild(ce('div', 'gist-map-contents'));
+        contents.textContent = Object.keys(gist.files).join(', ');
+        c.onclick = function(elem) {
+            page('/gists/' + gist.id, function(err, res){
+                onclick(res, elem);
+            });
+        };
+    }
+
+    var o = {
+        container: container,
+        onclick: function(_) {
+            onclick = _;
+            return o;
+        },
+        appendTo: function(elem) {
+            elem.appendChild(container);
+            return o;
+        }
+    };
+
+    loadPage();
+
+    return o;
+}
+
+function page(postfix, callback) {
+    request({
+        uri: base + postfix,
+        headers: {
+            Authorization: 'token ' + token
+        },
+        json: true,
+        crossOrigin: true
+    }, function(err, res, body) {
+        callback(null, body);
+    });
+}
+
+},{"browser-request":6}],3:[function(require,module,exports){
+var queue = require('queue-async'),
+    request = require('browser-request'),
+    treeui = require('treeui'),
+    token;
+
+var base = 'https://api.github.com';
+
+var create = false;
+
+module.exports = function(_, _create,endpoint) {
+    token = _;
+    if (_create !== undefined) create = _create;
+    base = endpoint || base;
+    return module.exports;
+};
+
+module.exports.open = open;
+module.exports.request = req;
+
+function open() {
+
+    var out = treeui(treeRequest)
+        .expandable(function(res) {
+            var last = res[res.length - 1];
+            return last.type !== 'blob' && last.type !== 'commit' &&
+                last.type !== 'new';
+        })
+        .display(function(res) {
+            var last = res[res.length - 1];
+            return last.name || last.login || last.path;
+        });
+
+    return out;
+}
+
+function treeRequest(tree, callback) {
+    if (tree.length === 0) {
+        req('/user', function(err, user) {
+            req('/user/orgs', function(err, res) {
+                var orgs = res.map(function(_) {
+                    return [_];
+                });
+                callback(null, [user].concat(orgs));
+            });
+        });
+    } else if (tree.length === 1) {
+        if (tree[0].type === 'User') {
+            req('/users/' + tree[0].login + '/repos', function(err, res) {
+                callback(null, res.map(function(_) {
+                    return [tree[0], _];
+                }));
+            });
+        } else {
+            req('/orgs/' + tree[0].login + '/repos', function(err, res) {
+                callback(null, res.map(function(_) {
+                    return [tree[0], _];
+                }));
+            });
+        }
+    } else if (tree.length === 2) {
+        req('/repos/' + tree[1].full_name + '/branches', function(err, res) {
+            callback(null, res.map(function(_) {
+                return [tree[0], tree[1], _];
+            }));
+        });
+    } else if (tree.length === 3) {
+        req('/repos/' + tree[1].full_name + '/git/trees/' + tree[2].commit.sha, function(err, res) {
+            var r = [];
+            if (!res.length && res.tree) res = [res];
+            for (var i = 0; i < res.length; i++) {
+                for (var j = 0; j < res[i].tree.length; j++) {
+                    r.push([tree[0], tree[1], tree[2], res[i].tree[j]]);
+                }
+            }
+            if (create) {
+                r.push([tree[0], tree[1], tree[2], {
+                    type: 'new',
+                    name: '+ New File'
+                }]);
+            }
+            callback(null, r);
+        });
+    } else if (tree.length > 3) {
+        req('/repos/' + tree[1].full_name + '/git/trees/' + tree[tree.length - 1].sha, function(err, res) {
+            var r = [];
+            if (!res.length && res.tree) res = [res];
+            for (var i = 0; i < res.length; i++) {
+                for (var j = 0; j < res[i].tree.length; j++) {
+                    r.push(tree.concat([res[i].tree[j]]));
+                }
+            }
+            if (create) {
+                r.push([tree[0], tree[1], tree[2], {
+                    type: 'new',
+                    name: '+ New File'
+                }]);
+            }
+            callback(null, r);
+        });
+    }
+}
+
+function req(postfix, callback) {
+    var q = queue(1);
+    q.defer(page, null)
+        .awaitAll(function(err, res) {
+            if (res) {
+                var flat = res.reduce(function(mem, r) {
+                    return mem.concat(r);
+                }, []);
+                callback(err, flat);
+            } else {
+                callback(err);
+            }
+        });
+
+    function page(url, callback) {
+        request({
+            uri: url || base + postfix,
+            headers: {
+                Authorization: 'token ' + token
+            },
+            json: true,
+            crossOrigin: true
+        }, function(err, res, body) {
+            var link = (res.getResponseHeader('Link') || '').match(/\<([^\>]+)\>\; rel="next"/);
+            if (link) {
+                q.defer(page, link[1]);
+            }
+            callback(null, body);
+        });
+    }
+}
+
+},{"browser-request":6,"queue-async":90,"treeui":139}],4:[function(require,module,exports){
+(function (global){
+'use strict';
+
+// compare and isBuffer taken from https://github.com/feross/buffer/blob/680e9e5e488f22aac27599a57dc844a6315928dd/index.js
+// original notice:
+
+/*!
+ * The buffer module from node.js, for the browser.
+ *
+ * @author   Feross Aboukhadijeh <feross@feross.org> <http://feross.org>
+ * @license  MIT
+ */
+function compare(a, b) {
+  if (a === b) {
+    return 0;
+  }
+
+  var x = a.length;
+  var y = b.length;
+
+  for (var i = 0, len = Math.min(x, y); i < len; ++i) {
+    if (a[i] !== b[i]) {
+      x = a[i];
+      y = b[i];
+      break;
+    }
+  }
+
+  if (x < y) {
+    return -1;
+  }
+  if (y < x) {
+    return 1;
+  }
+  return 0;
+}
+function isBuffer(b) {
+  if (global.Buffer && typeof global.Buffer.isBuffer === 'function') {
+    return global.Buffer.isBuffer(b);
+  }
+  return !!(b != null && b._isBuffer);
+}
+
+// based on node assert, original notice:
+
 // http://wiki.commonjs.org/wiki/Unit_Testing/1.0
 //
 // THIS IS NOT TESTED NOR LIKELY TO WORK OUTSIDE V8!
@@ -1258,14 +1534,36 @@ module.exports=[
 // ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 // WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
-// when used in node, this will actually load the util module we depend on
-// versus loading the builtin util module as happens otherwise
-// this is a bug in node module loading as far as I am concerned
 var util = require('util/');
-
-var pSlice = Array.prototype.slice;
 var hasOwn = Object.prototype.hasOwnProperty;
-
+var pSlice = Array.prototype.slice;
+var functionsHaveNames = (function () {
+  return function foo() {}.name === 'foo';
+}());
+function pToString (obj) {
+  return Object.prototype.toString.call(obj);
+}
+function isView(arrbuf) {
+  if (isBuffer(arrbuf)) {
+    return false;
+  }
+  if (typeof global.ArrayBuffer !== 'function') {
+    return false;
+  }
+  if (typeof ArrayBuffer.isView === 'function') {
+    return ArrayBuffer.isView(arrbuf);
+  }
+  if (!arrbuf) {
+    return false;
+  }
+  if (arrbuf instanceof DataView) {
+    return true;
+  }
+  if (arrbuf.buffer && arrbuf.buffer instanceof ArrayBuffer) {
+    return true;
+  }
+  return false;
+}
 // 1. The assert module provides functions that throw
 // AssertionError's when particular conditions are not met. The
 // assert module must conform to the following interface.
@@ -1277,6 +1575,19 @@ var assert = module.exports = ok;
 //                             actual: actual,
 //                             expected: expected })
 
+var regex = /\s*function\s+([^\(\s]*)\s*/;
+// based on https://github.com/ljharb/function.prototype.name/blob/adeeeec8bfcc6068b187d7d9fb3d5bb1d3a30899/implementation.js
+function getName(func) {
+  if (!util.isFunction(func)) {
+    return;
+  }
+  if (functionsHaveNames) {
+    return func.name;
+  }
+  var str = func.toString();
+  var match = str.match(regex);
+  return match && match[1];
+}
 assert.AssertionError = function AssertionError(options) {
   this.name = 'AssertionError';
   this.actual = options.actual;
@@ -1290,18 +1601,16 @@ assert.AssertionError = function AssertionError(options) {
     this.generatedMessage = true;
   }
   var stackStartFunction = options.stackStartFunction || fail;
-
   if (Error.captureStackTrace) {
     Error.captureStackTrace(this, stackStartFunction);
-  }
-  else {
+  } else {
     // non v8 browsers so we can have a stacktrace
     var err = new Error();
     if (err.stack) {
       var out = err.stack;
 
       // try to strip useless frames
-      var fn_name = stackStartFunction.name;
+      var fn_name = getName(stackStartFunction);
       var idx = out.indexOf('\n' + fn_name);
       if (idx >= 0) {
         // once we have located the function frame
@@ -1318,31 +1627,25 @@ assert.AssertionError = function AssertionError(options) {
 // assert.AssertionError instanceof Error
 util.inherits(assert.AssertionError, Error);
 
-function replacer(key, value) {
-  if (util.isUndefined(value)) {
-    return '' + value;
-  }
-  if (util.isNumber(value) && (isNaN(value) || !isFinite(value))) {
-    return value.toString();
-  }
-  if (util.isFunction(value) || util.isRegExp(value)) {
-    return value.toString();
-  }
-  return value;
-}
-
 function truncate(s, n) {
-  if (util.isString(s)) {
+  if (typeof s === 'string') {
     return s.length < n ? s : s.slice(0, n);
   } else {
     return s;
   }
 }
-
+function inspect(something) {
+  if (functionsHaveNames || !util.isFunction(something)) {
+    return util.inspect(something);
+  }
+  var rawname = getName(something);
+  var name = rawname ? ': ' + rawname : '';
+  return '[Function' +  name + ']';
+}
 function getMessage(self) {
-  return truncate(JSON.stringify(self.actual, replacer), 128) + ' ' +
+  return truncate(inspect(self.actual), 128) + ' ' +
          self.operator + ' ' +
-         truncate(JSON.stringify(self.expected, replacer), 128);
+         truncate(inspect(self.expected), 128);
 }
 
 // At present only the three keys mentioned above are used and
@@ -1402,24 +1705,23 @@ assert.notEqual = function notEqual(actual, expected, message) {
 // assert.deepEqual(actual, expected, message_opt);
 
 assert.deepEqual = function deepEqual(actual, expected, message) {
-  if (!_deepEqual(actual, expected)) {
+  if (!_deepEqual(actual, expected, false)) {
     fail(actual, expected, message, 'deepEqual', assert.deepEqual);
   }
 };
 
-function _deepEqual(actual, expected) {
+assert.deepStrictEqual = function deepStrictEqual(actual, expected, message) {
+  if (!_deepEqual(actual, expected, true)) {
+    fail(actual, expected, message, 'deepStrictEqual', assert.deepStrictEqual);
+  }
+};
+
+function _deepEqual(actual, expected, strict, memos) {
   // 7.1. All identical values are equivalent, as determined by ===.
   if (actual === expected) {
     return true;
-
-  } else if (util.isBuffer(actual) && util.isBuffer(expected)) {
-    if (actual.length != expected.length) return false;
-
-    for (var i = 0; i < actual.length; i++) {
-      if (actual[i] !== expected[i]) return false;
-    }
-
-    return true;
+  } else if (isBuffer(actual) && isBuffer(expected)) {
+    return compare(actual, expected) === 0;
 
   // 7.2. If the expected value is a Date object, the actual value is
   // equivalent if it is also a Date object that refers to the same time.
@@ -1438,8 +1740,22 @@ function _deepEqual(actual, expected) {
 
   // 7.4. Other pairs that do not both pass typeof value == 'object',
   // equivalence is determined by ==.
-  } else if (!util.isObject(actual) && !util.isObject(expected)) {
-    return actual == expected;
+  } else if ((actual === null || typeof actual !== 'object') &&
+             (expected === null || typeof expected !== 'object')) {
+    return strict ? actual === expected : actual == expected;
+
+  // If both values are instances of typed arrays, wrap their underlying
+  // ArrayBuffers in a Buffer each to increase performance
+  // This optimization requires the arrays to have the same type as checked by
+  // Object.prototype.toString (aka pToString). Never perform binary
+  // comparisons for Float*Arrays, though, since e.g. +0 === -0 but their
+  // bit patterns are not identical.
+  } else if (isView(actual) && isView(expected) &&
+             pToString(actual) === pToString(expected) &&
+             !(actual instanceof Float32Array ||
+               actual instanceof Float64Array)) {
+    return compare(new Uint8Array(actual.buffer),
+                   new Uint8Array(expected.buffer)) === 0;
 
   // 7.5 For all other Object pairs, including Array objects, equivalence is
   // determined by having the same number of owned properties (as verified
@@ -1447,8 +1763,22 @@ function _deepEqual(actual, expected) {
   // (although not necessarily the same order), equivalent values for every
   // corresponding key, and an identical 'prototype' property. Note: this
   // accounts for both named and indexed properties on Arrays.
+  } else if (isBuffer(actual) !== isBuffer(expected)) {
+    return false;
   } else {
-    return objEquiv(actual, expected);
+    memos = memos || {actual: [], expected: []};
+
+    var actualIndex = memos.actual.indexOf(actual);
+    if (actualIndex !== -1) {
+      if (actualIndex === memos.expected.indexOf(expected)) {
+        return true;
+      }
+    }
+
+    memos.actual.push(actual);
+    memos.expected.push(expected);
+
+    return objEquiv(actual, expected, strict, memos);
   }
 }
 
@@ -1456,45 +1786,44 @@ function isArguments(object) {
   return Object.prototype.toString.call(object) == '[object Arguments]';
 }
 
-function objEquiv(a, b) {
-  if (util.isNullOrUndefined(a) || util.isNullOrUndefined(b))
+function objEquiv(a, b, strict, actualVisitedObjects) {
+  if (a === null || a === undefined || b === null || b === undefined)
     return false;
-  // an identical 'prototype' property.
-  if (a.prototype !== b.prototype) return false;
-  //~~~I've managed to break Object.keys through screwy arguments passing.
-  //   Converting to array solves the problem.
-  if (isArguments(a)) {
-    if (!isArguments(b)) {
-      return false;
-    }
+  // if one is a primitive, the other must be same
+  if (util.isPrimitive(a) || util.isPrimitive(b))
+    return a === b;
+  if (strict && Object.getPrototypeOf(a) !== Object.getPrototypeOf(b))
+    return false;
+  var aIsArgs = isArguments(a);
+  var bIsArgs = isArguments(b);
+  if ((aIsArgs && !bIsArgs) || (!aIsArgs && bIsArgs))
+    return false;
+  if (aIsArgs) {
     a = pSlice.call(a);
     b = pSlice.call(b);
-    return _deepEqual(a, b);
+    return _deepEqual(a, b, strict);
   }
-  try {
-    var ka = objectKeys(a),
-        kb = objectKeys(b),
-        key, i;
-  } catch (e) {//happens when one is a string literal and the other isn't
-    return false;
-  }
+  var ka = objectKeys(a);
+  var kb = objectKeys(b);
+  var key, i;
   // having the same number of owned properties (keys incorporates
   // hasOwnProperty)
-  if (ka.length != kb.length)
+  if (ka.length !== kb.length)
     return false;
   //the same set of keys (although not necessarily the same order),
   ka.sort();
   kb.sort();
   //~~~cheap key test
   for (i = ka.length - 1; i >= 0; i--) {
-    if (ka[i] != kb[i])
+    if (ka[i] !== kb[i])
       return false;
   }
   //equivalent values for every corresponding key, and
   //~~~possibly expensive deep test
   for (i = ka.length - 1; i >= 0; i--) {
     key = ka[i];
-    if (!_deepEqual(a[key], b[key])) return false;
+    if (!_deepEqual(a[key], b[key], strict, actualVisitedObjects))
+      return false;
   }
   return true;
 }
@@ -1503,10 +1832,18 @@ function objEquiv(a, b) {
 // assert.notDeepEqual(actual, expected, message_opt);
 
 assert.notDeepEqual = function notDeepEqual(actual, expected, message) {
-  if (_deepEqual(actual, expected)) {
+  if (_deepEqual(actual, expected, false)) {
     fail(actual, expected, message, 'notDeepEqual', assert.notDeepEqual);
   }
 };
+
+assert.notDeepStrictEqual = notDeepStrictEqual;
+function notDeepStrictEqual(actual, expected, message) {
+  if (_deepEqual(actual, expected, true)) {
+    fail(actual, expected, message, 'notDeepStrictEqual', notDeepStrictEqual);
+  }
+}
+
 
 // 9. The strict equality assertion tests strict equality, as determined by ===.
 // assert.strictEqual(actual, expected, message_opt);
@@ -1533,28 +1870,46 @@ function expectedException(actual, expected) {
 
   if (Object.prototype.toString.call(expected) == '[object RegExp]') {
     return expected.test(actual);
-  } else if (actual instanceof expected) {
-    return true;
-  } else if (expected.call({}, actual) === true) {
-    return true;
   }
 
-  return false;
+  try {
+    if (actual instanceof expected) {
+      return true;
+    }
+  } catch (e) {
+    // Ignore.  The instanceof check doesn't work for arrow functions.
+  }
+
+  if (Error.isPrototypeOf(expected)) {
+    return false;
+  }
+
+  return expected.call({}, actual) === true;
+}
+
+function _tryBlock(block) {
+  var error;
+  try {
+    block();
+  } catch (e) {
+    error = e;
+  }
+  return error;
 }
 
 function _throws(shouldThrow, block, expected, message) {
   var actual;
 
-  if (util.isString(expected)) {
+  if (typeof block !== 'function') {
+    throw new TypeError('"block" argument must be a function');
+  }
+
+  if (typeof expected === 'string') {
     message = expected;
     expected = null;
   }
 
-  try {
-    block();
-  } catch (e) {
-    actual = e;
-  }
+  actual = _tryBlock(block);
 
   message = (expected && expected.name ? ' (' + expected.name + ').' : '.') +
             (message ? ' ' + message : '.');
@@ -1563,7 +1918,14 @@ function _throws(shouldThrow, block, expected, message) {
     fail(actual, expected, 'Missing expected exception' + message);
   }
 
-  if (!shouldThrow && expectedException(actual, expected)) {
+  var userProvidedMessage = typeof message === 'string';
+  var isUnwantedException = !shouldThrow && util.isError(actual);
+  var isUnexpectedException = !shouldThrow && actual && !expected;
+
+  if ((isUnwantedException &&
+      userProvidedMessage &&
+      expectedException(actual, expected)) ||
+      isUnexpectedException) {
     fail(actual, expected, 'Got unwanted exception' + message);
   }
 
@@ -1577,15 +1939,15 @@ function _throws(shouldThrow, block, expected, message) {
 // assert.throws(block, Error_opt, message_opt);
 
 assert.throws = function(block, /*optional*/error, /*optional*/message) {
-  _throws.apply(this, [true].concat(pSlice.call(arguments)));
+  _throws(true, block, error, message);
 };
 
 // EXTENSION! This is annoying to write outside this module.
-assert.doesNotThrow = function(block, /*optional*/message) {
-  _throws.apply(this, [false].concat(pSlice.call(arguments)));
+assert.doesNotThrow = function(block, /*optional*/error, /*optional*/message) {
+  _throws(false, block, error, message);
 };
 
-assert.ifError = function(err) { if (err) {throw err;}};
+assert.ifError = function(err) { if (err) throw err; };
 
 var objectKeys = Object.keys || function (obj) {
   var keys = [];
@@ -1595,7 +1957,124 @@ var objectKeys = Object.keys || function (obj) {
   return keys;
 };
 
-},{"util/":140}],3:[function(require,module,exports){
+}).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
+},{"util/":142}],5:[function(require,module,exports){
+'use strict'
+
+exports.byteLength = byteLength
+exports.toByteArray = toByteArray
+exports.fromByteArray = fromByteArray
+
+var lookup = []
+var revLookup = []
+var Arr = typeof Uint8Array !== 'undefined' ? Uint8Array : Array
+
+var code = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+for (var i = 0, len = code.length; i < len; ++i) {
+  lookup[i] = code[i]
+  revLookup[code.charCodeAt(i)] = i
+}
+
+revLookup['-'.charCodeAt(0)] = 62
+revLookup['_'.charCodeAt(0)] = 63
+
+function placeHoldersCount (b64) {
+  var len = b64.length
+  if (len % 4 > 0) {
+    throw new Error('Invalid string. Length must be a multiple of 4')
+  }
+
+  // the number of equal signs (place holders)
+  // if there are two placeholders, than the two characters before it
+  // represent one byte
+  // if there is only one, then the three characters before it represent 2 bytes
+  // this is just a cheap hack to not do indexOf twice
+  return b64[len - 2] === '=' ? 2 : b64[len - 1] === '=' ? 1 : 0
+}
+
+function byteLength (b64) {
+  // base64 is 4/3 + up to two characters of the original data
+  return b64.length * 3 / 4 - placeHoldersCount(b64)
+}
+
+function toByteArray (b64) {
+  var i, j, l, tmp, placeHolders, arr
+  var len = b64.length
+  placeHolders = placeHoldersCount(b64)
+
+  arr = new Arr(len * 3 / 4 - placeHolders)
+
+  // if there are placeholders, only get up to the last complete 4 chars
+  l = placeHolders > 0 ? len - 4 : len
+
+  var L = 0
+
+  for (i = 0, j = 0; i < l; i += 4, j += 3) {
+    tmp = (revLookup[b64.charCodeAt(i)] << 18) | (revLookup[b64.charCodeAt(i + 1)] << 12) | (revLookup[b64.charCodeAt(i + 2)] << 6) | revLookup[b64.charCodeAt(i + 3)]
+    arr[L++] = (tmp >> 16) & 0xFF
+    arr[L++] = (tmp >> 8) & 0xFF
+    arr[L++] = tmp & 0xFF
+  }
+
+  if (placeHolders === 2) {
+    tmp = (revLookup[b64.charCodeAt(i)] << 2) | (revLookup[b64.charCodeAt(i + 1)] >> 4)
+    arr[L++] = tmp & 0xFF
+  } else if (placeHolders === 1) {
+    tmp = (revLookup[b64.charCodeAt(i)] << 10) | (revLookup[b64.charCodeAt(i + 1)] << 4) | (revLookup[b64.charCodeAt(i + 2)] >> 2)
+    arr[L++] = (tmp >> 8) & 0xFF
+    arr[L++] = tmp & 0xFF
+  }
+
+  return arr
+}
+
+function tripletToBase64 (num) {
+  return lookup[num >> 18 & 0x3F] + lookup[num >> 12 & 0x3F] + lookup[num >> 6 & 0x3F] + lookup[num & 0x3F]
+}
+
+function encodeChunk (uint8, start, end) {
+  var tmp
+  var output = []
+  for (var i = start; i < end; i += 3) {
+    tmp = (uint8[i] << 16) + (uint8[i + 1] << 8) + (uint8[i + 2])
+    output.push(tripletToBase64(tmp))
+  }
+  return output.join('')
+}
+
+function fromByteArray (uint8) {
+  var tmp
+  var len = uint8.length
+  var extraBytes = len % 3 // if we have 1 byte left, pad 2 bytes
+  var output = ''
+  var parts = []
+  var maxChunkLength = 16383 // must be multiple of 3
+
+  // go through the array every three bytes, we'll deal with trailing stuff later
+  for (var i = 0, len2 = len - extraBytes; i < len2; i += maxChunkLength) {
+    parts.push(encodeChunk(uint8, i, (i + maxChunkLength) > len2 ? len2 : (i + maxChunkLength)))
+  }
+
+  // pad the end with zeros, but make sure to not forget the extra bytes
+  if (extraBytes === 1) {
+    tmp = uint8[len - 1]
+    output += lookup[tmp >> 2]
+    output += lookup[(tmp << 4) & 0x3F]
+    output += '=='
+  } else if (extraBytes === 2) {
+    tmp = (uint8[len - 2] << 8) + (uint8[len - 1])
+    output += lookup[tmp >> 10]
+    output += lookup[(tmp >> 4) & 0x3F]
+    output += lookup[(tmp << 2) & 0x3F]
+    output += '='
+  }
+
+  parts.push(output)
+
+  return parts.join('')
+}
+
+},{}],6:[function(require,module,exports){
 // Browser Request
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -2091,165 +2570,334 @@ function b64_enc (data) {
 }));
 //UMD FOOTER END
 
-},{}],4:[function(require,module,exports){
+},{}],7:[function(require,module,exports){
 
-},{}],5:[function(require,module,exports){
-module.exports=require(4)
-},{}],6:[function(require,module,exports){
+},{}],8:[function(require,module,exports){
+arguments[4][7][0].apply(exports,arguments)
+},{"dup":7}],9:[function(require,module,exports){
 /*!
  * The buffer module from node.js, for the browser.
  *
  * @author   Feross Aboukhadijeh <feross@feross.org> <http://feross.org>
  * @license  MIT
  */
+/* eslint-disable no-proto */
+
+'use strict'
 
 var base64 = require('base64-js')
 var ieee754 = require('ieee754')
-var isArray = require('is-array')
 
 exports.Buffer = Buffer
-exports.SlowBuffer = Buffer
+exports.SlowBuffer = SlowBuffer
 exports.INSPECT_MAX_BYTES = 50
-Buffer.poolSize = 8192 // not used by this implementation
 
-var kMaxLength = 0x3fffffff
+var K_MAX_LENGTH = 0x7fffffff
+exports.kMaxLength = K_MAX_LENGTH
 
 /**
  * If `Buffer.TYPED_ARRAY_SUPPORT`:
  *   === true    Use Uint8Array implementation (fastest)
- *   === false   Use Object implementation (most compatible, even IE6)
+ *   === false   Print warning and recommend using `buffer` v4.x which has an Object
+ *               implementation (most compatible, even IE6)
  *
  * Browsers that support typed arrays are IE 10+, Firefox 4+, Chrome 7+, Safari 5.1+,
  * Opera 11.6+, iOS 4.2+.
  *
- * Note:
- *
- * - Implementation must support adding new properties to `Uint8Array` instances.
- *   Firefox 4-29 lacked support, fixed in Firefox 30+.
- *   See: https://bugzilla.mozilla.org/show_bug.cgi?id=695438.
- *
- *  - Chrome 9-10 is missing the `TypedArray.prototype.subarray` function.
- *
- *  - IE10 has a broken `TypedArray.prototype.subarray` function which returns arrays of
- *    incorrect length in some situations.
- *
- * We detect these buggy browsers and set `Buffer.TYPED_ARRAY_SUPPORT` to `false` so they will
- * get the Object implementation, which is slower but will work correctly.
+ * We report that the browser does not support typed arrays if the are not subclassable
+ * using __proto__. Firefox 4-29 lacks support for adding new properties to `Uint8Array`
+ * (See: https://bugzilla.mozilla.org/show_bug.cgi?id=695438). IE 10 lacks support
+ * for __proto__ and has a buggy typed array implementation.
  */
-Buffer.TYPED_ARRAY_SUPPORT = (function () {
+Buffer.TYPED_ARRAY_SUPPORT = typedArraySupport()
+
+if (!Buffer.TYPED_ARRAY_SUPPORT) {
+  console.error(
+    'This browser lacks typed array (Uint8Array) support which is required by ' +
+    '`buffer` v5.x. Use `buffer` v4.x if you require old browser support.')
+}
+
+function typedArraySupport () {
+  // Can typed array instances can be augmented?
   try {
-    var buf = new ArrayBuffer(0)
-    var arr = new Uint8Array(buf)
-    arr.foo = function () { return 42 }
-    return 42 === arr.foo() && // typed array instances can be augmented
-        typeof arr.subarray === 'function' && // chrome 9-10 lack `subarray`
-        new Uint8Array(1).subarray(1, 1).byteLength === 0 // ie10 has broken `subarray`
+    var arr = new Uint8Array(1)
+    arr.__proto__ = {__proto__: Uint8Array.prototype, foo: function () { return 42 }}
+    return arr.foo() === 42
   } catch (e) {
     return false
   }
-})()
+}
+
+function createBuffer (length) {
+  if (length > K_MAX_LENGTH) {
+    throw new RangeError('Invalid typed array length')
+  }
+  // Return an augmented `Uint8Array` instance
+  var buf = new Uint8Array(length)
+  buf.__proto__ = Buffer.prototype
+  return buf
+}
 
 /**
- * Class: Buffer
- * =============
+ * The Buffer constructor returns instances of `Uint8Array` that have their
+ * prototype changed to `Buffer.prototype`. Furthermore, `Buffer` is a subclass of
+ * `Uint8Array`, so the returned instances will have all the node `Buffer` methods
+ * and the `Uint8Array` methods. Square bracket notation works as expected -- it
+ * returns a single octet.
  *
- * The Buffer constructor returns instances of `Uint8Array` that are augmented
- * with function properties for all the node `Buffer` API functions. We use
- * `Uint8Array` so that square bracket notation works as expected -- it returns
- * a single octet.
- *
- * By augmenting the instances, we can avoid modifying the `Uint8Array`
- * prototype.
+ * The `Uint8Array` prototype remains unmodified.
  */
-function Buffer (subject, encoding, noZero) {
-  if (!(this instanceof Buffer))
-    return new Buffer(subject, encoding, noZero)
 
-  var type = typeof subject
+function Buffer (arg, encodingOrOffset, length) {
+  // Common case.
+  if (typeof arg === 'number') {
+    if (typeof encodingOrOffset === 'string') {
+      throw new Error(
+        'If encoding is specified then the first argument must be a string'
+      )
+    }
+    return allocUnsafe(arg)
+  }
+  return from(arg, encodingOrOffset, length)
+}
 
-  // Find the length
-  var length
-  if (type === 'number')
-    length = subject > 0 ? subject >>> 0 : 0
-  else if (type === 'string') {
-    if (encoding === 'base64')
-      subject = base64clean(subject)
-    length = Buffer.byteLength(subject, encoding)
-  } else if (type === 'object' && subject !== null) { // assume object is array-like
-    if (subject.type === 'Buffer' && isArray(subject.data))
-      subject = subject.data
-    length = +subject.length > 0 ? Math.floor(+subject.length) : 0
-  } else
-    throw new TypeError('must start with number, buffer, array or string')
+// Fix subarray() in ES2016. See: https://github.com/feross/buffer/pull/97
+if (typeof Symbol !== 'undefined' && Symbol.species &&
+    Buffer[Symbol.species] === Buffer) {
+  Object.defineProperty(Buffer, Symbol.species, {
+    value: null,
+    configurable: true,
+    enumerable: false,
+    writable: false
+  })
+}
 
-  if (this.length > kMaxLength)
-    throw new RangeError('Attempt to allocate Buffer larger than maximum ' +
-      'size: 0x' + kMaxLength.toString(16) + ' bytes')
+Buffer.poolSize = 8192 // not used by this implementation
 
-  var buf
-  if (Buffer.TYPED_ARRAY_SUPPORT) {
-    // Preferred: Return an augmented `Uint8Array` instance for best performance
-    buf = Buffer._augment(new Uint8Array(length))
-  } else {
-    // Fallback: Return THIS instance of Buffer (created by `new`)
-    buf = this
-    buf.length = length
-    buf._isBuffer = true
+function from (value, encodingOrOffset, length) {
+  if (typeof value === 'number') {
+    throw new TypeError('"value" argument must not be a number')
   }
 
-  var i
-  if (Buffer.TYPED_ARRAY_SUPPORT && typeof subject.byteLength === 'number') {
-    // Speed optimization -- use set if we're copying from a typed array
-    buf._set(subject)
-  } else if (isArrayish(subject)) {
-    // Treat array-ish objects as a byte array
-    if (Buffer.isBuffer(subject)) {
-      for (i = 0; i < length; i++)
-        buf[i] = subject.readUInt8(i)
-    } else {
-      for (i = 0; i < length; i++)
-        buf[i] = ((subject[i] % 256) + 256) % 256
-    }
-  } else if (type === 'string') {
-    buf.write(subject, 0, encoding)
-  } else if (type === 'number' && !Buffer.TYPED_ARRAY_SUPPORT && !noZero) {
-    for (i = 0; i < length; i++) {
-      buf[i] = 0
-    }
+  if (typeof ArrayBuffer !== 'undefined' && value instanceof ArrayBuffer) {
+    return fromArrayBuffer(value, encodingOrOffset, length)
+  }
+
+  if (typeof value === 'string') {
+    return fromString(value, encodingOrOffset)
+  }
+
+  return fromObject(value)
+}
+
+/**
+ * Functionally equivalent to Buffer(arg, encoding) but throws a TypeError
+ * if value is a number.
+ * Buffer.from(str[, encoding])
+ * Buffer.from(array)
+ * Buffer.from(buffer)
+ * Buffer.from(arrayBuffer[, byteOffset[, length]])
+ **/
+Buffer.from = function (value, encodingOrOffset, length) {
+  return from(value, encodingOrOffset, length)
+}
+
+// Note: Change prototype *after* Buffer.from is defined to workaround Chrome bug:
+// https://github.com/feross/buffer/pull/148
+Buffer.prototype.__proto__ = Uint8Array.prototype
+Buffer.__proto__ = Uint8Array
+
+function assertSize (size) {
+  if (typeof size !== 'number') {
+    throw new TypeError('"size" argument must be a number')
+  } else if (size < 0) {
+    throw new RangeError('"size" argument must not be negative')
+  }
+}
+
+function alloc (size, fill, encoding) {
+  assertSize(size)
+  if (size <= 0) {
+    return createBuffer(size)
+  }
+  if (fill !== undefined) {
+    // Only pay attention to encoding if it's a string. This
+    // prevents accidentally sending in a number that would
+    // be interpretted as a start offset.
+    return typeof encoding === 'string'
+      ? createBuffer(size).fill(fill, encoding)
+      : createBuffer(size).fill(fill)
+  }
+  return createBuffer(size)
+}
+
+/**
+ * Creates a new filled Buffer instance.
+ * alloc(size[, fill[, encoding]])
+ **/
+Buffer.alloc = function (size, fill, encoding) {
+  return alloc(size, fill, encoding)
+}
+
+function allocUnsafe (size) {
+  assertSize(size)
+  return createBuffer(size < 0 ? 0 : checked(size) | 0)
+}
+
+/**
+ * Equivalent to Buffer(num), by default creates a non-zero-filled Buffer instance.
+ * */
+Buffer.allocUnsafe = function (size) {
+  return allocUnsafe(size)
+}
+/**
+ * Equivalent to SlowBuffer(num), by default creates a non-zero-filled Buffer instance.
+ */
+Buffer.allocUnsafeSlow = function (size) {
+  return allocUnsafe(size)
+}
+
+function fromString (string, encoding) {
+  if (typeof encoding !== 'string' || encoding === '') {
+    encoding = 'utf8'
+  }
+
+  if (!Buffer.isEncoding(encoding)) {
+    throw new TypeError('"encoding" must be a valid string encoding')
+  }
+
+  var length = byteLength(string, encoding) | 0
+  var buf = createBuffer(length)
+
+  var actual = buf.write(string, encoding)
+
+  if (actual !== length) {
+    // Writing a hex string, for example, that contains invalid characters will
+    // cause everything after the first invalid character to be ignored. (e.g.
+    // 'abxxcd' will be treated as 'ab')
+    buf = buf.slice(0, actual)
   }
 
   return buf
 }
 
-Buffer.isBuffer = function (b) {
+function fromArrayLike (array) {
+  var length = array.length < 0 ? 0 : checked(array.length) | 0
+  var buf = createBuffer(length)
+  for (var i = 0; i < length; i += 1) {
+    buf[i] = array[i] & 255
+  }
+  return buf
+}
+
+function fromArrayBuffer (array, byteOffset, length) {
+  array.byteLength // this throws if `array` is not a valid ArrayBuffer
+
+  if (byteOffset < 0 || array.byteLength < byteOffset) {
+    throw new RangeError('\'offset\' is out of bounds')
+  }
+
+  if (array.byteLength < byteOffset + (length || 0)) {
+    throw new RangeError('\'length\' is out of bounds')
+  }
+
+  var buf
+  if (byteOffset === undefined && length === undefined) {
+    buf = new Uint8Array(array)
+  } else if (length === undefined) {
+    buf = new Uint8Array(array, byteOffset)
+  } else {
+    buf = new Uint8Array(array, byteOffset, length)
+  }
+
+  // Return an augmented `Uint8Array` instance
+  buf.__proto__ = Buffer.prototype
+  return buf
+}
+
+function fromObject (obj) {
+  if (Buffer.isBuffer(obj)) {
+    var len = checked(obj.length) | 0
+    var buf = createBuffer(len)
+
+    if (buf.length === 0) {
+      return buf
+    }
+
+    obj.copy(buf, 0, 0, len)
+    return buf
+  }
+
+  if (obj) {
+    if ((typeof ArrayBuffer !== 'undefined' &&
+        obj.buffer instanceof ArrayBuffer) || 'length' in obj) {
+      if (typeof obj.length !== 'number' || isnan(obj.length)) {
+        return createBuffer(0)
+      }
+      return fromArrayLike(obj)
+    }
+
+    if (obj.type === 'Buffer' && Array.isArray(obj.data)) {
+      return fromArrayLike(obj.data)
+    }
+  }
+
+  throw new TypeError('First argument must be a string, Buffer, ArrayBuffer, Array, or array-like object.')
+}
+
+function checked (length) {
+  // Note: cannot use `length < K_MAX_LENGTH` here because that fails when
+  // length is NaN (which is otherwise coerced to zero.)
+  if (length >= K_MAX_LENGTH) {
+    throw new RangeError('Attempt to allocate Buffer larger than maximum ' +
+                         'size: 0x' + K_MAX_LENGTH.toString(16) + ' bytes')
+  }
+  return length | 0
+}
+
+function SlowBuffer (length) {
+  if (+length != length) { // eslint-disable-line eqeqeq
+    length = 0
+  }
+  return Buffer.alloc(+length)
+}
+
+Buffer.isBuffer = function isBuffer (b) {
   return !!(b != null && b._isBuffer)
 }
 
-Buffer.compare = function (a, b) {
-  if (!Buffer.isBuffer(a) || !Buffer.isBuffer(b))
+Buffer.compare = function compare (a, b) {
+  if (!Buffer.isBuffer(a) || !Buffer.isBuffer(b)) {
     throw new TypeError('Arguments must be Buffers')
+  }
+
+  if (a === b) return 0
 
   var x = a.length
   var y = b.length
-  for (var i = 0, len = Math.min(x, y); i < len && a[i] === b[i]; i++) {}
-  if (i !== len) {
-    x = a[i]
-    y = b[i]
+
+  for (var i = 0, len = Math.min(x, y); i < len; ++i) {
+    if (a[i] !== b[i]) {
+      x = a[i]
+      y = b[i]
+      break
+    }
   }
+
   if (x < y) return -1
   if (y < x) return 1
   return 0
 }
 
-Buffer.isEncoding = function (encoding) {
+Buffer.isEncoding = function isEncoding (encoding) {
   switch (String(encoding).toLowerCase()) {
     case 'hex':
     case 'utf8':
     case 'utf-8':
     case 'ascii':
+    case 'latin1':
     case 'binary':
     case 'base64':
-    case 'raw':
     case 'ucs2':
     case 'ucs-2':
     case 'utf16le':
@@ -2260,79 +2908,117 @@ Buffer.isEncoding = function (encoding) {
   }
 }
 
-Buffer.concat = function (list, totalLength) {
-  if (!isArray(list)) throw new TypeError('Usage: Buffer.concat(list[, length])')
+Buffer.concat = function concat (list, length) {
+  if (!Array.isArray(list)) {
+    throw new TypeError('"list" argument must be an Array of Buffers')
+  }
 
   if (list.length === 0) {
-    return new Buffer(0)
-  } else if (list.length === 1) {
-    return list[0]
+    return Buffer.alloc(0)
   }
 
   var i
-  if (totalLength === undefined) {
-    totalLength = 0
-    for (i = 0; i < list.length; i++) {
-      totalLength += list[i].length
+  if (length === undefined) {
+    length = 0
+    for (i = 0; i < list.length; ++i) {
+      length += list[i].length
     }
   }
 
-  var buf = new Buffer(totalLength)
+  var buffer = Buffer.allocUnsafe(length)
   var pos = 0
-  for (i = 0; i < list.length; i++) {
-    var item = list[i]
-    item.copy(buf, pos)
-    pos += item.length
+  for (i = 0; i < list.length; ++i) {
+    var buf = list[i]
+    if (!Buffer.isBuffer(buf)) {
+      throw new TypeError('"list" argument must be an Array of Buffers')
+    }
+    buf.copy(buffer, pos)
+    pos += buf.length
   }
-  return buf
+  return buffer
 }
 
-Buffer.byteLength = function (str, encoding) {
-  var ret
-  str = str + ''
-  switch (encoding || 'utf8') {
-    case 'ascii':
-    case 'binary':
-    case 'raw':
-      ret = str.length
-      break
-    case 'ucs2':
-    case 'ucs-2':
-    case 'utf16le':
-    case 'utf-16le':
-      ret = str.length * 2
-      break
-    case 'hex':
-      ret = str.length >>> 1
-      break
-    case 'utf8':
-    case 'utf-8':
-      ret = utf8ToBytes(str).length
-      break
-    case 'base64':
-      ret = base64ToBytes(str).length
-      break
-    default:
-      ret = str.length
+function byteLength (string, encoding) {
+  if (Buffer.isBuffer(string)) {
+    return string.length
   }
-  return ret
+  if (typeof ArrayBuffer !== 'undefined' && typeof ArrayBuffer.isView === 'function' &&
+      (ArrayBuffer.isView(string) || string instanceof ArrayBuffer)) {
+    return string.byteLength
+  }
+  if (typeof string !== 'string') {
+    string = '' + string
+  }
+
+  var len = string.length
+  if (len === 0) return 0
+
+  // Use a for loop to avoid recursion
+  var loweredCase = false
+  for (;;) {
+    switch (encoding) {
+      case 'ascii':
+      case 'latin1':
+      case 'binary':
+        return len
+      case 'utf8':
+      case 'utf-8':
+      case undefined:
+        return utf8ToBytes(string).length
+      case 'ucs2':
+      case 'ucs-2':
+      case 'utf16le':
+      case 'utf-16le':
+        return len * 2
+      case 'hex':
+        return len >>> 1
+      case 'base64':
+        return base64ToBytes(string).length
+      default:
+        if (loweredCase) return utf8ToBytes(string).length // assume utf8
+        encoding = ('' + encoding).toLowerCase()
+        loweredCase = true
+    }
+  }
 }
+Buffer.byteLength = byteLength
 
-// pre-set for values that may exist in the future
-Buffer.prototype.length = undefined
-Buffer.prototype.parent = undefined
-
-// toString(encoding, start=0, end=buffer.length)
-Buffer.prototype.toString = function (encoding, start, end) {
+function slowToString (encoding, start, end) {
   var loweredCase = false
 
-  start = start >>> 0
-  end = end === undefined || end === Infinity ? this.length : end >>> 0
+  // No need to verify that "this.length <= MAX_UINT32" since it's a read-only
+  // property of a typed array.
+
+  // This behaves neither like String nor Uint8Array in that we set start/end
+  // to their upper/lower bounds if the value passed is out of range.
+  // undefined is handled specially as per ECMA-262 6th Edition,
+  // Section 13.3.3.7 Runtime Semantics: KeyedBindingInitialization.
+  if (start === undefined || start < 0) {
+    start = 0
+  }
+  // Return early if start > this.length. Done here to prevent potential uint32
+  // coercion fail below.
+  if (start > this.length) {
+    return ''
+  }
+
+  if (end === undefined || end > this.length) {
+    end = this.length
+  }
+
+  if (end <= 0) {
+    return ''
+  }
+
+  // Force coersion to uint32. This will also coerce falsey/NaN values to 0.
+  end >>>= 0
+  start >>>= 0
+
+  if (end <= start) {
+    return ''
+  }
 
   if (!encoding) encoding = 'utf8'
-  if (start < 0) start = 0
-  if (end > this.length) end = this.length
-  if (end <= start) return ''
 
   while (true) {
     switch (encoding) {
@@ -2346,8 +3032,9 @@ Buffer.prototype.toString = function (encoding, start, end) {
       case 'ascii':
         return asciiSlice(this, start, end)
 
+      case 'latin1':
       case 'binary':
-        return binarySlice(this, start, end)
+        return latin1Slice(this, start, end)
 
       case 'base64':
         return base64Slice(this, start, end)
@@ -2359,45 +3046,273 @@ Buffer.prototype.toString = function (encoding, start, end) {
         return utf16leSlice(this, start, end)
 
       default:
-        if (loweredCase)
-          throw new TypeError('Unknown encoding: ' + encoding)
+        if (loweredCase) throw new TypeError('Unknown encoding: ' + encoding)
         encoding = (encoding + '').toLowerCase()
         loweredCase = true
     }
   }
 }
 
-Buffer.prototype.equals = function (b) {
-  if(!Buffer.isBuffer(b)) throw new TypeError('Argument must be a Buffer')
+// The property is used by `Buffer.isBuffer` and `is-buffer` (in Safari 5-7) to detect
+// Buffer instances.
+Buffer.prototype._isBuffer = true
+
+function swap (b, n, m) {
+  var i = b[n]
+  b[n] = b[m]
+  b[m] = i
+}
+
+Buffer.prototype.swap16 = function swap16 () {
+  var len = this.length
+  if (len % 2 !== 0) {
+    throw new RangeError('Buffer size must be a multiple of 16-bits')
+  }
+  for (var i = 0; i < len; i += 2) {
+    swap(this, i, i + 1)
+  }
+  return this
+}
+
+Buffer.prototype.swap32 = function swap32 () {
+  var len = this.length
+  if (len % 4 !== 0) {
+    throw new RangeError('Buffer size must be a multiple of 32-bits')
+  }
+  for (var i = 0; i < len; i += 4) {
+    swap(this, i, i + 3)
+    swap(this, i + 1, i + 2)
+  }
+  return this
+}
+
+Buffer.prototype.swap64 = function swap64 () {
+  var len = this.length
+  if (len % 8 !== 0) {
+    throw new RangeError('Buffer size must be a multiple of 64-bits')
+  }
+  for (var i = 0; i < len; i += 8) {
+    swap(this, i, i + 7)
+    swap(this, i + 1, i + 6)
+    swap(this, i + 2, i + 5)
+    swap(this, i + 3, i + 4)
+  }
+  return this
+}
+
+Buffer.prototype.toString = function toString () {
+  var length = this.length
+  if (length === 0) return ''
+  if (arguments.length === 0) return utf8Slice(this, 0, length)
+  return slowToString.apply(this, arguments)
+}
+
+Buffer.prototype.equals = function equals (b) {
+  if (!Buffer.isBuffer(b)) throw new TypeError('Argument must be a Buffer')
+  if (this === b) return true
   return Buffer.compare(this, b) === 0
 }
 
-Buffer.prototype.inspect = function () {
+Buffer.prototype.inspect = function inspect () {
   var str = ''
   var max = exports.INSPECT_MAX_BYTES
   if (this.length > 0) {
     str = this.toString('hex', 0, max).match(/.{2}/g).join(' ')
-    if (this.length > max)
-      str += ' ... '
+    if (this.length > max) str += ' ... '
   }
   return '<Buffer ' + str + '>'
 }
 
-Buffer.prototype.compare = function (b) {
-  if (!Buffer.isBuffer(b)) throw new TypeError('Argument must be a Buffer')
-  return Buffer.compare(this, b)
+Buffer.prototype.compare = function compare (target, start, end, thisStart, thisEnd) {
+  if (!Buffer.isBuffer(target)) {
+    throw new TypeError('Argument must be a Buffer')
+  }
+
+  if (start === undefined) {
+    start = 0
+  }
+  if (end === undefined) {
+    end = target ? target.length : 0
+  }
+  if (thisStart === undefined) {
+    thisStart = 0
+  }
+  if (thisEnd === undefined) {
+    thisEnd = this.length
+  }
+
+  if (start < 0 || end > target.length || thisStart < 0 || thisEnd > this.length) {
+    throw new RangeError('out of range index')
+  }
+
+  if (thisStart >= thisEnd && start >= end) {
+    return 0
+  }
+  if (thisStart >= thisEnd) {
+    return -1
+  }
+  if (start >= end) {
+    return 1
+  }
+
+  start >>>= 0
+  end >>>= 0
+  thisStart >>>= 0
+  thisEnd >>>= 0
+
+  if (this === target) return 0
+
+  var x = thisEnd - thisStart
+  var y = end - start
+  var len = Math.min(x, y)
+
+  var thisCopy = this.slice(thisStart, thisEnd)
+  var targetCopy = target.slice(start, end)
+
+  for (var i = 0; i < len; ++i) {
+    if (thisCopy[i] !== targetCopy[i]) {
+      x = thisCopy[i]
+      y = targetCopy[i]
+      break
+    }
+  }
+
+  if (x < y) return -1
+  if (y < x) return 1
+  return 0
 }
 
-// `get` will be removed in Node 0.13+
-Buffer.prototype.get = function (offset) {
-  console.log('.get() is deprecated. Access using array indexes instead.')
-  return this.readUInt8(offset)
+// Finds either the first index of `val` in `buffer` at offset >= `byteOffset`,
+// OR the last index of `val` in `buffer` at offset <= `byteOffset`.
+//
+// Arguments:
+// - buffer - a Buffer to search
+// - val - a string, Buffer, or number
+// - byteOffset - an index into `buffer`; will be clamped to an int32
+// - encoding - an optional encoding, relevant is val is a string
+// - dir - true for indexOf, false for lastIndexOf
+function bidirectionalIndexOf (buffer, val, byteOffset, encoding, dir) {
+  // Empty buffer means no match
+  if (buffer.length === 0) return -1
+
+  // Normalize byteOffset
+  if (typeof byteOffset === 'string') {
+    encoding = byteOffset
+    byteOffset = 0
+  } else if (byteOffset > 0x7fffffff) {
+    byteOffset = 0x7fffffff
+  } else if (byteOffset < -0x80000000) {
+    byteOffset = -0x80000000
+  }
+  byteOffset = +byteOffset  // Coerce to Number.
+  if (isNaN(byteOffset)) {
+    // byteOffset: it it's undefined, null, NaN, "foo", etc, search whole buffer
+    byteOffset = dir ? 0 : (buffer.length - 1)
+  }
+
+  // Normalize byteOffset: negative offsets start from the end of the buffer
+  if (byteOffset < 0) byteOffset = buffer.length + byteOffset
+  if (byteOffset >= buffer.length) {
+    if (dir) return -1
+    else byteOffset = buffer.length - 1
+  } else if (byteOffset < 0) {
+    if (dir) byteOffset = 0
+    else return -1
+  }
+
+  // Normalize val
+  if (typeof val === 'string') {
+    val = Buffer.from(val, encoding)
+  }
+
+  // Finally, search either indexOf (if dir is true) or lastIndexOf
+  if (Buffer.isBuffer(val)) {
+    // Special case: looking for empty string/buffer always fails
+    if (val.length === 0) {
+      return -1
+    }
+    return arrayIndexOf(buffer, val, byteOffset, encoding, dir)
+  } else if (typeof val === 'number') {
+    val = val & 0xFF // Search for a byte value [0-255]
+    if (typeof Uint8Array.prototype.indexOf === 'function') {
+      if (dir) {
+        return Uint8Array.prototype.indexOf.call(buffer, val, byteOffset)
+      } else {
+        return Uint8Array.prototype.lastIndexOf.call(buffer, val, byteOffset)
+      }
+    }
+    return arrayIndexOf(buffer, [ val ], byteOffset, encoding, dir)
+  }
+
+  throw new TypeError('val must be string, number or Buffer')
 }
 
-// `set` will be removed in Node 0.13+
-Buffer.prototype.set = function (v, offset) {
-  console.log('.set() is deprecated. Access using array indexes instead.')
-  return this.writeUInt8(v, offset)
+function arrayIndexOf (arr, val, byteOffset, encoding, dir) {
+  var indexSize = 1
+  var arrLength = arr.length
+  var valLength = val.length
+
+  if (encoding !== undefined) {
+    encoding = String(encoding).toLowerCase()
+    if (encoding === 'ucs2' || encoding === 'ucs-2' ||
+        encoding === 'utf16le' || encoding === 'utf-16le') {
+      if (arr.length < 2 || val.length < 2) {
+        return -1
+      }
+      indexSize = 2
+      arrLength /= 2
+      valLength /= 2
+      byteOffset /= 2
+    }
+  }
+
+  function read (buf, i) {
+    if (indexSize === 1) {
+      return buf[i]
+    } else {
+      return buf.readUInt16BE(i * indexSize)
+    }
+  }
+
+  var i
+  if (dir) {
+    var foundIndex = -1
+    for (i = byteOffset; i < arrLength; i++) {
+      if (read(arr, i) === read(val, foundIndex === -1 ? 0 : i - foundIndex)) {
+        if (foundIndex === -1) foundIndex = i
+        if (i - foundIndex + 1 === valLength) return foundIndex * indexSize
+      } else {
+        if (foundIndex !== -1) i -= i - foundIndex
+        foundIndex = -1
+      }
+    }
+  } else {
+    if (byteOffset + valLength > arrLength) byteOffset = arrLength - valLength
+    for (i = byteOffset; i >= 0; i--) {
+      var found = true
+      for (var j = 0; j < valLength; j++) {
+        if (read(arr, i + j) !== read(val, j)) {
+          found = false
+          break
+        }
+      }
+      if (found) return i
+    }
+  }
+
+  return -1
+}
+
+Buffer.prototype.includes = function includes (val, byteOffset, encoding) {
+  return this.indexOf(val, byteOffset, encoding) !== -1
+}
+
+Buffer.prototype.indexOf = function indexOf (val, byteOffset, encoding) {
+  return bidirectionalIndexOf(this, val, byteOffset, encoding, true)
+}
+
+Buffer.prototype.lastIndexOf = function lastIndexOf (val, byteOffset, encoding) {
+  return bidirectionalIndexOf(this, val, byteOffset, encoding, false)
 }
 
 function hexWrite (buf, string, offset, length) {
@@ -2414,101 +3329,112 @@ function hexWrite (buf, string, offset, length) {
 
   // must be an even number of digits
   var strLen = string.length
-  if (strLen % 2 !== 0) throw new Error('Invalid hex string')
+  if (strLen % 2 !== 0) throw new TypeError('Invalid hex string')
 
   if (length > strLen / 2) {
     length = strLen / 2
   }
-  for (var i = 0; i < length; i++) {
-    var byte = parseInt(string.substr(i * 2, 2), 16)
-    if (isNaN(byte)) throw new Error('Invalid hex string')
-    buf[offset + i] = byte
+  for (var i = 0; i < length; ++i) {
+    var parsed = parseInt(string.substr(i * 2, 2), 16)
+    if (isNaN(parsed)) return i
+    buf[offset + i] = parsed
   }
   return i
 }
 
 function utf8Write (buf, string, offset, length) {
-  var charsWritten = blitBuffer(utf8ToBytes(string), buf, offset, length)
-  return charsWritten
+  return blitBuffer(utf8ToBytes(string, buf.length - offset), buf, offset, length)
 }
 
 function asciiWrite (buf, string, offset, length) {
-  var charsWritten = blitBuffer(asciiToBytes(string), buf, offset, length)
-  return charsWritten
+  return blitBuffer(asciiToBytes(string), buf, offset, length)
 }
 
-function binaryWrite (buf, string, offset, length) {
+function latin1Write (buf, string, offset, length) {
   return asciiWrite(buf, string, offset, length)
 }
 
 function base64Write (buf, string, offset, length) {
-  var charsWritten = blitBuffer(base64ToBytes(string), buf, offset, length)
-  return charsWritten
+  return blitBuffer(base64ToBytes(string), buf, offset, length)
 }
 
-function utf16leWrite (buf, string, offset, length) {
-  var charsWritten = blitBuffer(utf16leToBytes(string), buf, offset, length, 2)
-  return charsWritten
+function ucs2Write (buf, string, offset, length) {
+  return blitBuffer(utf16leToBytes(string, buf.length - offset), buf, offset, length)
 }
 
-Buffer.prototype.write = function (string, offset, length, encoding) {
-  // Support both (string, offset, length, encoding)
-  // and the legacy (string, encoding, offset, length)
-  if (isFinite(offset)) {
-    if (!isFinite(length)) {
+Buffer.prototype.write = function write (string, offset, length, encoding) {
+  // Buffer#write(string)
+  if (offset === undefined) {
+    encoding = 'utf8'
+    length = this.length
+    offset = 0
+  // Buffer#write(string, encoding)
+  } else if (length === undefined && typeof offset === 'string') {
+    encoding = offset
+    length = this.length
+    offset = 0
+  // Buffer#write(string, offset[, length][, encoding])
+  } else if (isFinite(offset)) {
+    offset = offset >>> 0
+    if (isFinite(length)) {
+      length = length >>> 0
+      if (encoding === undefined) encoding = 'utf8'
+    } else {
       encoding = length
       length = undefined
     }
-  } else {  // legacy
-    var swap = encoding
-    encoding = offset
-    offset = length
-    length = swap
+  // legacy write(string, encoding, offset, length) - remove in v0.13
+  } else {
+    throw new Error(
+      'Buffer.write(string, encoding, offset[, length]) is no longer supported'
+    )
   }
 
-  offset = Number(offset) || 0
   var remaining = this.length - offset
-  if (!length) {
-    length = remaining
-  } else {
-    length = Number(length)
-    if (length > remaining) {
-      length = remaining
+  if (length === undefined || length > remaining) length = remaining
+
+  if ((string.length > 0 && (length < 0 || offset < 0)) || offset > this.length) {
+    throw new RangeError('Attempt to write outside buffer bounds')
+  }
+
+  if (!encoding) encoding = 'utf8'
+
+  var loweredCase = false
+  for (;;) {
+    switch (encoding) {
+      case 'hex':
+        return hexWrite(this, string, offset, length)
+
+      case 'utf8':
+      case 'utf-8':
+        return utf8Write(this, string, offset, length)
+
+      case 'ascii':
+        return asciiWrite(this, string, offset, length)
+
+      case 'latin1':
+      case 'binary':
+        return latin1Write(this, string, offset, length)
+
+      case 'base64':
+        // Warning: maxLength not taken into account in base64Write
+        return base64Write(this, string, offset, length)
+
+      case 'ucs2':
+      case 'ucs-2':
+      case 'utf16le':
+      case 'utf-16le':
+        return ucs2Write(this, string, offset, length)
+
+      default:
+        if (loweredCase) throw new TypeError('Unknown encoding: ' + encoding)
+        encoding = ('' + encoding).toLowerCase()
+        loweredCase = true
     }
   }
-  encoding = String(encoding || 'utf8').toLowerCase()
-
-  var ret
-  switch (encoding) {
-    case 'hex':
-      ret = hexWrite(this, string, offset, length)
-      break
-    case 'utf8':
-    case 'utf-8':
-      ret = utf8Write(this, string, offset, length)
-      break
-    case 'ascii':
-      ret = asciiWrite(this, string, offset, length)
-      break
-    case 'binary':
-      ret = binaryWrite(this, string, offset, length)
-      break
-    case 'base64':
-      ret = base64Write(this, string, offset, length)
-      break
-    case 'ucs2':
-    case 'ucs-2':
-    case 'utf16le':
-    case 'utf-16le':
-      ret = utf16leWrite(this, string, offset, length)
-      break
-    default:
-      throw new TypeError('Unknown encoding: ' + encoding)
-  }
-  return ret
 }
 
-Buffer.prototype.toJSON = function () {
+Buffer.prototype.toJSON = function toJSON () {
   return {
     type: 'Buffer',
     data: Array.prototype.slice.call(this._arr || this, 0)
@@ -2524,34 +3450,119 @@ function base64Slice (buf, start, end) {
 }
 
 function utf8Slice (buf, start, end) {
-  var res = ''
-  var tmp = ''
   end = Math.min(buf.length, end)
+  var res = []
 
-  for (var i = start; i < end; i++) {
-    if (buf[i] <= 0x7F) {
-      res += decodeUtf8Char(tmp) + String.fromCharCode(buf[i])
-      tmp = ''
-    } else {
-      tmp += '%' + buf[i].toString(16)
+  var i = start
+  while (i < end) {
+    var firstByte = buf[i]
+    var codePoint = null
+    var bytesPerSequence = (firstByte > 0xEF) ? 4
+      : (firstByte > 0xDF) ? 3
+      : (firstByte > 0xBF) ? 2
+      : 1
+
+    if (i + bytesPerSequence <= end) {
+      var secondByte, thirdByte, fourthByte, tempCodePoint
+
+      switch (bytesPerSequence) {
+        case 1:
+          if (firstByte < 0x80) {
+            codePoint = firstByte
+          }
+          break
+        case 2:
+          secondByte = buf[i + 1]
+          if ((secondByte & 0xC0) === 0x80) {
+            tempCodePoint = (firstByte & 0x1F) << 0x6 | (secondByte & 0x3F)
+            if (tempCodePoint > 0x7F) {
+              codePoint = tempCodePoint
+            }
+          }
+          break
+        case 3:
+          secondByte = buf[i + 1]
+          thirdByte = buf[i + 2]
+          if ((secondByte & 0xC0) === 0x80 && (thirdByte & 0xC0) === 0x80) {
+            tempCodePoint = (firstByte & 0xF) << 0xC | (secondByte & 0x3F) << 0x6 | (thirdByte & 0x3F)
+            if (tempCodePoint > 0x7FF && (tempCodePoint < 0xD800 || tempCodePoint > 0xDFFF)) {
+              codePoint = tempCodePoint
+            }
+          }
+          break
+        case 4:
+          secondByte = buf[i + 1]
+          thirdByte = buf[i + 2]
+          fourthByte = buf[i + 3]
+          if ((secondByte & 0xC0) === 0x80 && (thirdByte & 0xC0) === 0x80 && (fourthByte & 0xC0) === 0x80) {
+            tempCodePoint = (firstByte & 0xF) << 0x12 | (secondByte & 0x3F) << 0xC | (thirdByte & 0x3F) << 0x6 | (fourthByte & 0x3F)
+            if (tempCodePoint > 0xFFFF && tempCodePoint < 0x110000) {
+              codePoint = tempCodePoint
+            }
+          }
+      }
     }
+
+    if (codePoint === null) {
+      // we did not generate a valid codePoint so insert a
+      // replacement char (U+FFFD) and advance only 1 byte
+      codePoint = 0xFFFD
+      bytesPerSequence = 1
+    } else if (codePoint > 0xFFFF) {
+      // encode to utf16 (surrogate pair dance)
+      codePoint -= 0x10000
+      res.push(codePoint >>> 10 & 0x3FF | 0xD800)
+      codePoint = 0xDC00 | codePoint & 0x3FF
+    }
+
+    res.push(codePoint)
+    i += bytesPerSequence
   }
 
-  return res + decodeUtf8Char(tmp)
+  return decodeCodePointsArray(res)
+}
+
+// Based on http://stackoverflow.com/a/22747272/680742, the browser with
+// the lowest limit is Chrome, with 0x10000 args.
+// We go 1 magnitude less, for safety
+var MAX_ARGUMENTS_LENGTH = 0x1000
+
+function decodeCodePointsArray (codePoints) {
+  var len = codePoints.length
+  if (len <= MAX_ARGUMENTS_LENGTH) {
+    return String.fromCharCode.apply(String, codePoints) // avoid extra slice()
+  }
+
+  // Decode in chunks to avoid "call stack size exceeded".
+  var res = ''
+  var i = 0
+  while (i < len) {
+    res += String.fromCharCode.apply(
+      String,
+      codePoints.slice(i, i += MAX_ARGUMENTS_LENGTH)
+    )
+  }
+  return res
 }
 
 function asciiSlice (buf, start, end) {
   var ret = ''
   end = Math.min(buf.length, end)
 
-  for (var i = start; i < end; i++) {
-    ret += String.fromCharCode(buf[i])
+  for (var i = start; i < end; ++i) {
+    ret += String.fromCharCode(buf[i] & 0x7F)
   }
   return ret
 }
 
-function binarySlice (buf, start, end) {
-  return asciiSlice(buf, start, end)
+function latin1Slice (buf, start, end) {
+  var ret = ''
+  end = Math.min(buf.length, end)
+
+  for (var i = start; i < end; ++i) {
+    ret += String.fromCharCode(buf[i])
+  }
+  return ret
 }
 
 function hexSlice (buf, start, end) {
@@ -2561,7 +3572,7 @@ function hexSlice (buf, start, end) {
   if (!end || end < 0 || end > len) end = len
 
   var out = ''
-  for (var i = start; i < end; i++) {
+  for (var i = start; i < end; ++i) {
     out += toHex(buf[i])
   }
   return out
@@ -2576,73 +3587,93 @@ function utf16leSlice (buf, start, end) {
   return res
 }
 
-Buffer.prototype.slice = function (start, end) {
+Buffer.prototype.slice = function slice (start, end) {
   var len = this.length
   start = ~~start
   end = end === undefined ? len : ~~end
 
   if (start < 0) {
-    start += len;
-    if (start < 0)
-      start = 0
+    start += len
+    if (start < 0) start = 0
   } else if (start > len) {
     start = len
   }
 
   if (end < 0) {
     end += len
-    if (end < 0)
-      end = 0
+    if (end < 0) end = 0
   } else if (end > len) {
     end = len
   }
 
-  if (end < start)
-    end = start
+  if (end < start) end = start
 
-  if (Buffer.TYPED_ARRAY_SUPPORT) {
-    return Buffer._augment(this.subarray(start, end))
-  } else {
-    var sliceLen = end - start
-    var newBuf = new Buffer(sliceLen, undefined, true)
-    for (var i = 0; i < sliceLen; i++) {
-      newBuf[i] = this[i + start]
-    }
-    return newBuf
-  }
+  var newBuf = this.subarray(start, end)
+  // Return an augmented `Uint8Array` instance
+  newBuf.__proto__ = Buffer.prototype
+  return newBuf
 }
 
 /*
  * Need to make sure that buffer isn't trying to write out of bounds.
  */
 function checkOffset (offset, ext, length) {
-  if ((offset % 1) !== 0 || offset < 0)
-    throw new RangeError('offset is not uint')
-  if (offset + ext > length)
-    throw new RangeError('Trying to access beyond buffer length')
+  if ((offset % 1) !== 0 || offset < 0) throw new RangeError('offset is not uint')
+  if (offset + ext > length) throw new RangeError('Trying to access beyond buffer length')
 }
 
-Buffer.prototype.readUInt8 = function (offset, noAssert) {
-  if (!noAssert)
-    checkOffset(offset, 1, this.length)
+Buffer.prototype.readUIntLE = function readUIntLE (offset, byteLength, noAssert) {
+  offset = offset >>> 0
+  byteLength = byteLength >>> 0
+  if (!noAssert) checkOffset(offset, byteLength, this.length)
+
+  var val = this[offset]
+  var mul = 1
+  var i = 0
+  while (++i < byteLength && (mul *= 0x100)) {
+    val += this[offset + i] * mul
+  }
+
+  return val
+}
+
+Buffer.prototype.readUIntBE = function readUIntBE (offset, byteLength, noAssert) {
+  offset = offset >>> 0
+  byteLength = byteLength >>> 0
+  if (!noAssert) {
+    checkOffset(offset, byteLength, this.length)
+  }
+
+  var val = this[offset + --byteLength]
+  var mul = 1
+  while (byteLength > 0 && (mul *= 0x100)) {
+    val += this[offset + --byteLength] * mul
+  }
+
+  return val
+}
+
+Buffer.prototype.readUInt8 = function readUInt8 (offset, noAssert) {
+  offset = offset >>> 0
+  if (!noAssert) checkOffset(offset, 1, this.length)
   return this[offset]
 }
 
-Buffer.prototype.readUInt16LE = function (offset, noAssert) {
-  if (!noAssert)
-    checkOffset(offset, 2, this.length)
+Buffer.prototype.readUInt16LE = function readUInt16LE (offset, noAssert) {
+  offset = offset >>> 0
+  if (!noAssert) checkOffset(offset, 2, this.length)
   return this[offset] | (this[offset + 1] << 8)
 }
 
-Buffer.prototype.readUInt16BE = function (offset, noAssert) {
-  if (!noAssert)
-    checkOffset(offset, 2, this.length)
+Buffer.prototype.readUInt16BE = function readUInt16BE (offset, noAssert) {
+  offset = offset >>> 0
+  if (!noAssert) checkOffset(offset, 2, this.length)
   return (this[offset] << 8) | this[offset + 1]
 }
 
-Buffer.prototype.readUInt32LE = function (offset, noAssert) {
-  if (!noAssert)
-    checkOffset(offset, 4, this.length)
+Buffer.prototype.readUInt32LE = function readUInt32LE (offset, noAssert) {
+  offset = offset >>> 0
+  if (!noAssert) checkOffset(offset, 4, this.length)
 
   return ((this[offset]) |
       (this[offset + 1] << 8) |
@@ -2650,419 +3681,468 @@ Buffer.prototype.readUInt32LE = function (offset, noAssert) {
       (this[offset + 3] * 0x1000000)
 }
 
-Buffer.prototype.readUInt32BE = function (offset, noAssert) {
-  if (!noAssert)
-    checkOffset(offset, 4, this.length)
+Buffer.prototype.readUInt32BE = function readUInt32BE (offset, noAssert) {
+  offset = offset >>> 0
+  if (!noAssert) checkOffset(offset, 4, this.length)
 
   return (this[offset] * 0x1000000) +
-      ((this[offset + 1] << 16) |
-      (this[offset + 2] << 8) |
-      this[offset + 3])
+    ((this[offset + 1] << 16) |
+    (this[offset + 2] << 8) |
+    this[offset + 3])
 }
 
-Buffer.prototype.readInt8 = function (offset, noAssert) {
-  if (!noAssert)
-    checkOffset(offset, 1, this.length)
-  if (!(this[offset] & 0x80))
-    return (this[offset])
+Buffer.prototype.readIntLE = function readIntLE (offset, byteLength, noAssert) {
+  offset = offset >>> 0
+  byteLength = byteLength >>> 0
+  if (!noAssert) checkOffset(offset, byteLength, this.length)
+
+  var val = this[offset]
+  var mul = 1
+  var i = 0
+  while (++i < byteLength && (mul *= 0x100)) {
+    val += this[offset + i] * mul
+  }
+  mul *= 0x80
+
+  if (val >= mul) val -= Math.pow(2, 8 * byteLength)
+
+  return val
+}
+
+Buffer.prototype.readIntBE = function readIntBE (offset, byteLength, noAssert) {
+  offset = offset >>> 0
+  byteLength = byteLength >>> 0
+  if (!noAssert) checkOffset(offset, byteLength, this.length)
+
+  var i = byteLength
+  var mul = 1
+  var val = this[offset + --i]
+  while (i > 0 && (mul *= 0x100)) {
+    val += this[offset + --i] * mul
+  }
+  mul *= 0x80
+
+  if (val >= mul) val -= Math.pow(2, 8 * byteLength)
+
+  return val
+}
+
+Buffer.prototype.readInt8 = function readInt8 (offset, noAssert) {
+  offset = offset >>> 0
+  if (!noAssert) checkOffset(offset, 1, this.length)
+  if (!(this[offset] & 0x80)) return (this[offset])
   return ((0xff - this[offset] + 1) * -1)
 }
 
-Buffer.prototype.readInt16LE = function (offset, noAssert) {
-  if (!noAssert)
-    checkOffset(offset, 2, this.length)
+Buffer.prototype.readInt16LE = function readInt16LE (offset, noAssert) {
+  offset = offset >>> 0
+  if (!noAssert) checkOffset(offset, 2, this.length)
   var val = this[offset] | (this[offset + 1] << 8)
   return (val & 0x8000) ? val | 0xFFFF0000 : val
 }
 
-Buffer.prototype.readInt16BE = function (offset, noAssert) {
-  if (!noAssert)
-    checkOffset(offset, 2, this.length)
+Buffer.prototype.readInt16BE = function readInt16BE (offset, noAssert) {
+  offset = offset >>> 0
+  if (!noAssert) checkOffset(offset, 2, this.length)
   var val = this[offset + 1] | (this[offset] << 8)
   return (val & 0x8000) ? val | 0xFFFF0000 : val
 }
 
-Buffer.prototype.readInt32LE = function (offset, noAssert) {
-  if (!noAssert)
-    checkOffset(offset, 4, this.length)
+Buffer.prototype.readInt32LE = function readInt32LE (offset, noAssert) {
+  offset = offset >>> 0
+  if (!noAssert) checkOffset(offset, 4, this.length)
 
   return (this[offset]) |
-      (this[offset + 1] << 8) |
-      (this[offset + 2] << 16) |
-      (this[offset + 3] << 24)
+    (this[offset + 1] << 8) |
+    (this[offset + 2] << 16) |
+    (this[offset + 3] << 24)
 }
 
-Buffer.prototype.readInt32BE = function (offset, noAssert) {
-  if (!noAssert)
-    checkOffset(offset, 4, this.length)
+Buffer.prototype.readInt32BE = function readInt32BE (offset, noAssert) {
+  offset = offset >>> 0
+  if (!noAssert) checkOffset(offset, 4, this.length)
 
   return (this[offset] << 24) |
-      (this[offset + 1] << 16) |
-      (this[offset + 2] << 8) |
-      (this[offset + 3])
+    (this[offset + 1] << 16) |
+    (this[offset + 2] << 8) |
+    (this[offset + 3])
 }
 
-Buffer.prototype.readFloatLE = function (offset, noAssert) {
-  if (!noAssert)
-    checkOffset(offset, 4, this.length)
+Buffer.prototype.readFloatLE = function readFloatLE (offset, noAssert) {
+  offset = offset >>> 0
+  if (!noAssert) checkOffset(offset, 4, this.length)
   return ieee754.read(this, offset, true, 23, 4)
 }
 
-Buffer.prototype.readFloatBE = function (offset, noAssert) {
-  if (!noAssert)
-    checkOffset(offset, 4, this.length)
+Buffer.prototype.readFloatBE = function readFloatBE (offset, noAssert) {
+  offset = offset >>> 0
+  if (!noAssert) checkOffset(offset, 4, this.length)
   return ieee754.read(this, offset, false, 23, 4)
 }
 
-Buffer.prototype.readDoubleLE = function (offset, noAssert) {
-  if (!noAssert)
-    checkOffset(offset, 8, this.length)
+Buffer.prototype.readDoubleLE = function readDoubleLE (offset, noAssert) {
+  offset = offset >>> 0
+  if (!noAssert) checkOffset(offset, 8, this.length)
   return ieee754.read(this, offset, true, 52, 8)
 }
 
-Buffer.prototype.readDoubleBE = function (offset, noAssert) {
-  if (!noAssert)
-    checkOffset(offset, 8, this.length)
+Buffer.prototype.readDoubleBE = function readDoubleBE (offset, noAssert) {
+  offset = offset >>> 0
+  if (!noAssert) checkOffset(offset, 8, this.length)
   return ieee754.read(this, offset, false, 52, 8)
 }
 
 function checkInt (buf, value, offset, ext, max, min) {
-  if (!Buffer.isBuffer(buf)) throw new TypeError('buffer must be a Buffer instance')
-  if (value > max || value < min) throw new TypeError('value is out of bounds')
-  if (offset + ext > buf.length) throw new TypeError('index out of range')
+  if (!Buffer.isBuffer(buf)) throw new TypeError('"buffer" argument must be a Buffer instance')
+  if (value > max || value < min) throw new RangeError('"value" argument is out of bounds')
+  if (offset + ext > buf.length) throw new RangeError('Index out of range')
 }
 
-Buffer.prototype.writeUInt8 = function (value, offset, noAssert) {
+Buffer.prototype.writeUIntLE = function writeUIntLE (value, offset, byteLength, noAssert) {
   value = +value
   offset = offset >>> 0
-  if (!noAssert)
-    checkInt(this, value, offset, 1, 0xff, 0)
-  if (!Buffer.TYPED_ARRAY_SUPPORT) value = Math.floor(value)
-  this[offset] = value
+  byteLength = byteLength >>> 0
+  if (!noAssert) {
+    var maxBytes = Math.pow(2, 8 * byteLength) - 1
+    checkInt(this, value, offset, byteLength, maxBytes, 0)
+  }
+
+  var mul = 1
+  var i = 0
+  this[offset] = value & 0xFF
+  while (++i < byteLength && (mul *= 0x100)) {
+    this[offset + i] = (value / mul) & 0xFF
+  }
+
+  return offset + byteLength
+}
+
+Buffer.prototype.writeUIntBE = function writeUIntBE (value, offset, byteLength, noAssert) {
+  value = +value
+  offset = offset >>> 0
+  byteLength = byteLength >>> 0
+  if (!noAssert) {
+    var maxBytes = Math.pow(2, 8 * byteLength) - 1
+    checkInt(this, value, offset, byteLength, maxBytes, 0)
+  }
+
+  var i = byteLength - 1
+  var mul = 1
+  this[offset + i] = value & 0xFF
+  while (--i >= 0 && (mul *= 0x100)) {
+    this[offset + i] = (value / mul) & 0xFF
+  }
+
+  return offset + byteLength
+}
+
+Buffer.prototype.writeUInt8 = function writeUInt8 (value, offset, noAssert) {
+  value = +value
+  offset = offset >>> 0
+  if (!noAssert) checkInt(this, value, offset, 1, 0xff, 0)
+  this[offset] = (value & 0xff)
   return offset + 1
 }
 
-function objectWriteUInt16 (buf, value, offset, littleEndian) {
-  if (value < 0) value = 0xffff + value + 1
-  for (var i = 0, j = Math.min(buf.length - offset, 2); i < j; i++) {
-    buf[offset + i] = (value & (0xff << (8 * (littleEndian ? i : 1 - i)))) >>>
-      (littleEndian ? i : 1 - i) * 8
-  }
-}
-
-Buffer.prototype.writeUInt16LE = function (value, offset, noAssert) {
+Buffer.prototype.writeUInt16LE = function writeUInt16LE (value, offset, noAssert) {
   value = +value
   offset = offset >>> 0
-  if (!noAssert)
-    checkInt(this, value, offset, 2, 0xffff, 0)
-  if (Buffer.TYPED_ARRAY_SUPPORT) {
-    this[offset] = value
-    this[offset + 1] = (value >>> 8)
-  } else objectWriteUInt16(this, value, offset, true)
+  if (!noAssert) checkInt(this, value, offset, 2, 0xffff, 0)
+  this[offset] = (value & 0xff)
+  this[offset + 1] = (value >>> 8)
   return offset + 2
 }
 
-Buffer.prototype.writeUInt16BE = function (value, offset, noAssert) {
+Buffer.prototype.writeUInt16BE = function writeUInt16BE (value, offset, noAssert) {
   value = +value
   offset = offset >>> 0
-  if (!noAssert)
-    checkInt(this, value, offset, 2, 0xffff, 0)
-  if (Buffer.TYPED_ARRAY_SUPPORT) {
-    this[offset] = (value >>> 8)
-    this[offset + 1] = value
-  } else objectWriteUInt16(this, value, offset, false)
+  if (!noAssert) checkInt(this, value, offset, 2, 0xffff, 0)
+  this[offset] = (value >>> 8)
+  this[offset + 1] = (value & 0xff)
   return offset + 2
 }
 
-function objectWriteUInt32 (buf, value, offset, littleEndian) {
-  if (value < 0) value = 0xffffffff + value + 1
-  for (var i = 0, j = Math.min(buf.length - offset, 4); i < j; i++) {
-    buf[offset + i] = (value >>> (littleEndian ? i : 3 - i) * 8) & 0xff
+Buffer.prototype.writeUInt32LE = function writeUInt32LE (value, offset, noAssert) {
+  value = +value
+  offset = offset >>> 0
+  if (!noAssert) checkInt(this, value, offset, 4, 0xffffffff, 0)
+  this[offset + 3] = (value >>> 24)
+  this[offset + 2] = (value >>> 16)
+  this[offset + 1] = (value >>> 8)
+  this[offset] = (value & 0xff)
+  return offset + 4
+}
+
+Buffer.prototype.writeUInt32BE = function writeUInt32BE (value, offset, noAssert) {
+  value = +value
+  offset = offset >>> 0
+  if (!noAssert) checkInt(this, value, offset, 4, 0xffffffff, 0)
+  this[offset] = (value >>> 24)
+  this[offset + 1] = (value >>> 16)
+  this[offset + 2] = (value >>> 8)
+  this[offset + 3] = (value & 0xff)
+  return offset + 4
+}
+
+Buffer.prototype.writeIntLE = function writeIntLE (value, offset, byteLength, noAssert) {
+  value = +value
+  offset = offset >>> 0
+  if (!noAssert) {
+    var limit = Math.pow(2, 8 * byteLength - 1)
+
+    checkInt(this, value, offset, byteLength, limit - 1, -limit)
   }
+
+  var i = 0
+  var mul = 1
+  var sub = 0
+  this[offset] = value & 0xFF
+  while (++i < byteLength && (mul *= 0x100)) {
+    if (value < 0 && sub === 0 && this[offset + i - 1] !== 0) {
+      sub = 1
+    }
+    this[offset + i] = ((value / mul) >> 0) - sub & 0xFF
+  }
+
+  return offset + byteLength
 }
 
-Buffer.prototype.writeUInt32LE = function (value, offset, noAssert) {
+Buffer.prototype.writeIntBE = function writeIntBE (value, offset, byteLength, noAssert) {
   value = +value
   offset = offset >>> 0
-  if (!noAssert)
-    checkInt(this, value, offset, 4, 0xffffffff, 0)
-  if (Buffer.TYPED_ARRAY_SUPPORT) {
-    this[offset + 3] = (value >>> 24)
-    this[offset + 2] = (value >>> 16)
-    this[offset + 1] = (value >>> 8)
-    this[offset] = value
-  } else objectWriteUInt32(this, value, offset, true)
-  return offset + 4
+  if (!noAssert) {
+    var limit = Math.pow(2, 8 * byteLength - 1)
+
+    checkInt(this, value, offset, byteLength, limit - 1, -limit)
+  }
+
+  var i = byteLength - 1
+  var mul = 1
+  var sub = 0
+  this[offset + i] = value & 0xFF
+  while (--i >= 0 && (mul *= 0x100)) {
+    if (value < 0 && sub === 0 && this[offset + i + 1] !== 0) {
+      sub = 1
+    }
+    this[offset + i] = ((value / mul) >> 0) - sub & 0xFF
+  }
+
+  return offset + byteLength
 }
 
-Buffer.prototype.writeUInt32BE = function (value, offset, noAssert) {
+Buffer.prototype.writeInt8 = function writeInt8 (value, offset, noAssert) {
   value = +value
   offset = offset >>> 0
-  if (!noAssert)
-    checkInt(this, value, offset, 4, 0xffffffff, 0)
-  if (Buffer.TYPED_ARRAY_SUPPORT) {
-    this[offset] = (value >>> 24)
-    this[offset + 1] = (value >>> 16)
-    this[offset + 2] = (value >>> 8)
-    this[offset + 3] = value
-  } else objectWriteUInt32(this, value, offset, false)
-  return offset + 4
-}
-
-Buffer.prototype.writeInt8 = function (value, offset, noAssert) {
-  value = +value
-  offset = offset >>> 0
-  if (!noAssert)
-    checkInt(this, value, offset, 1, 0x7f, -0x80)
-  if (!Buffer.TYPED_ARRAY_SUPPORT) value = Math.floor(value)
+  if (!noAssert) checkInt(this, value, offset, 1, 0x7f, -0x80)
   if (value < 0) value = 0xff + value + 1
-  this[offset] = value
+  this[offset] = (value & 0xff)
   return offset + 1
 }
 
-Buffer.prototype.writeInt16LE = function (value, offset, noAssert) {
+Buffer.prototype.writeInt16LE = function writeInt16LE (value, offset, noAssert) {
   value = +value
   offset = offset >>> 0
-  if (!noAssert)
-    checkInt(this, value, offset, 2, 0x7fff, -0x8000)
-  if (Buffer.TYPED_ARRAY_SUPPORT) {
-    this[offset] = value
-    this[offset + 1] = (value >>> 8)
-  } else objectWriteUInt16(this, value, offset, true)
+  if (!noAssert) checkInt(this, value, offset, 2, 0x7fff, -0x8000)
+  this[offset] = (value & 0xff)
+  this[offset + 1] = (value >>> 8)
   return offset + 2
 }
 
-Buffer.prototype.writeInt16BE = function (value, offset, noAssert) {
+Buffer.prototype.writeInt16BE = function writeInt16BE (value, offset, noAssert) {
   value = +value
   offset = offset >>> 0
-  if (!noAssert)
-    checkInt(this, value, offset, 2, 0x7fff, -0x8000)
-  if (Buffer.TYPED_ARRAY_SUPPORT) {
-    this[offset] = (value >>> 8)
-    this[offset + 1] = value
-  } else objectWriteUInt16(this, value, offset, false)
+  if (!noAssert) checkInt(this, value, offset, 2, 0x7fff, -0x8000)
+  this[offset] = (value >>> 8)
+  this[offset + 1] = (value & 0xff)
   return offset + 2
 }
 
-Buffer.prototype.writeInt32LE = function (value, offset, noAssert) {
+Buffer.prototype.writeInt32LE = function writeInt32LE (value, offset, noAssert) {
   value = +value
   offset = offset >>> 0
-  if (!noAssert)
-    checkInt(this, value, offset, 4, 0x7fffffff, -0x80000000)
-  if (Buffer.TYPED_ARRAY_SUPPORT) {
-    this[offset] = value
-    this[offset + 1] = (value >>> 8)
-    this[offset + 2] = (value >>> 16)
-    this[offset + 3] = (value >>> 24)
-  } else objectWriteUInt32(this, value, offset, true)
+  if (!noAssert) checkInt(this, value, offset, 4, 0x7fffffff, -0x80000000)
+  this[offset] = (value & 0xff)
+  this[offset + 1] = (value >>> 8)
+  this[offset + 2] = (value >>> 16)
+  this[offset + 3] = (value >>> 24)
   return offset + 4
 }
 
-Buffer.prototype.writeInt32BE = function (value, offset, noAssert) {
+Buffer.prototype.writeInt32BE = function writeInt32BE (value, offset, noAssert) {
   value = +value
   offset = offset >>> 0
-  if (!noAssert)
-    checkInt(this, value, offset, 4, 0x7fffffff, -0x80000000)
+  if (!noAssert) checkInt(this, value, offset, 4, 0x7fffffff, -0x80000000)
   if (value < 0) value = 0xffffffff + value + 1
-  if (Buffer.TYPED_ARRAY_SUPPORT) {
-    this[offset] = (value >>> 24)
-    this[offset + 1] = (value >>> 16)
-    this[offset + 2] = (value >>> 8)
-    this[offset + 3] = value
-  } else objectWriteUInt32(this, value, offset, false)
+  this[offset] = (value >>> 24)
+  this[offset + 1] = (value >>> 16)
+  this[offset + 2] = (value >>> 8)
+  this[offset + 3] = (value & 0xff)
   return offset + 4
 }
 
 function checkIEEE754 (buf, value, offset, ext, max, min) {
-  if (value > max || value < min) throw new TypeError('value is out of bounds')
-  if (offset + ext > buf.length) throw new TypeError('index out of range')
+  if (offset + ext > buf.length) throw new RangeError('Index out of range')
+  if (offset < 0) throw new RangeError('Index out of range')
 }
 
 function writeFloat (buf, value, offset, littleEndian, noAssert) {
-  if (!noAssert)
+  value = +value
+  offset = offset >>> 0
+  if (!noAssert) {
     checkIEEE754(buf, value, offset, 4, 3.4028234663852886e+38, -3.4028234663852886e+38)
+  }
   ieee754.write(buf, value, offset, littleEndian, 23, 4)
   return offset + 4
 }
 
-Buffer.prototype.writeFloatLE = function (value, offset, noAssert) {
+Buffer.prototype.writeFloatLE = function writeFloatLE (value, offset, noAssert) {
   return writeFloat(this, value, offset, true, noAssert)
 }
 
-Buffer.prototype.writeFloatBE = function (value, offset, noAssert) {
+Buffer.prototype.writeFloatBE = function writeFloatBE (value, offset, noAssert) {
   return writeFloat(this, value, offset, false, noAssert)
 }
 
 function writeDouble (buf, value, offset, littleEndian, noAssert) {
-  if (!noAssert)
+  value = +value
+  offset = offset >>> 0
+  if (!noAssert) {
     checkIEEE754(buf, value, offset, 8, 1.7976931348623157E+308, -1.7976931348623157E+308)
+  }
   ieee754.write(buf, value, offset, littleEndian, 52, 8)
   return offset + 8
 }
 
-Buffer.prototype.writeDoubleLE = function (value, offset, noAssert) {
+Buffer.prototype.writeDoubleLE = function writeDoubleLE (value, offset, noAssert) {
   return writeDouble(this, value, offset, true, noAssert)
 }
 
-Buffer.prototype.writeDoubleBE = function (value, offset, noAssert) {
+Buffer.prototype.writeDoubleBE = function writeDoubleBE (value, offset, noAssert) {
   return writeDouble(this, value, offset, false, noAssert)
 }
 
 // copy(targetBuffer, targetStart=0, sourceStart=0, sourceEnd=buffer.length)
-Buffer.prototype.copy = function (target, target_start, start, end) {
-  var source = this
-
+Buffer.prototype.copy = function copy (target, targetStart, start, end) {
   if (!start) start = 0
   if (!end && end !== 0) end = this.length
-  if (!target_start) target_start = 0
+  if (targetStart >= target.length) targetStart = target.length
+  if (!targetStart) targetStart = 0
+  if (end > 0 && end < start) end = start
 
   // Copy 0 bytes; we're done
-  if (end === start) return
-  if (target.length === 0 || source.length === 0) return
+  if (end === start) return 0
+  if (target.length === 0 || this.length === 0) return 0
 
   // Fatal error conditions
-  if (end < start) throw new TypeError('sourceEnd < sourceStart')
-  if (target_start < 0 || target_start >= target.length)
-    throw new TypeError('targetStart out of bounds')
-  if (start < 0 || start >= source.length) throw new TypeError('sourceStart out of bounds')
-  if (end < 0 || end > source.length) throw new TypeError('sourceEnd out of bounds')
+  if (targetStart < 0) {
+    throw new RangeError('targetStart out of bounds')
+  }
+  if (start < 0 || start >= this.length) throw new RangeError('sourceStart out of bounds')
+  if (end < 0) throw new RangeError('sourceEnd out of bounds')
 
   // Are we oob?
-  if (end > this.length)
-    end = this.length
-  if (target.length - target_start < end - start)
-    end = target.length - target_start + start
+  if (end > this.length) end = this.length
+  if (target.length - targetStart < end - start) {
+    end = target.length - targetStart + start
+  }
 
   var len = end - start
+  var i
 
-  if (len < 1000 || !Buffer.TYPED_ARRAY_SUPPORT) {
-    for (var i = 0; i < len; i++) {
-      target[i + target_start] = this[i + start]
+  if (this === target && start < targetStart && targetStart < end) {
+    // descending copy from end
+    for (i = len - 1; i >= 0; --i) {
+      target[i + targetStart] = this[i + start]
+    }
+  } else if (len < 1000) {
+    // ascending copy from start
+    for (i = 0; i < len; ++i) {
+      target[i + targetStart] = this[i + start]
     }
   } else {
-    target._set(this.subarray(start, start + len), target_start)
+    Uint8Array.prototype.set.call(
+      target,
+      this.subarray(start, start + len),
+      targetStart
+    )
   }
+
+  return len
 }
 
-// fill(value, start=0, end=buffer.length)
-Buffer.prototype.fill = function (value, start, end) {
-  if (!value) value = 0
-  if (!start) start = 0
-  if (!end) end = this.length
+// Usage:
+//    buffer.fill(number[, offset[, end]])
+//    buffer.fill(buffer[, offset[, end]])
+//    buffer.fill(string[, offset[, end]][, encoding])
+Buffer.prototype.fill = function fill (val, start, end, encoding) {
+  // Handle string cases:
+  if (typeof val === 'string') {
+    if (typeof start === 'string') {
+      encoding = start
+      start = 0
+      end = this.length
+    } else if (typeof end === 'string') {
+      encoding = end
+      end = this.length
+    }
+    if (val.length === 1) {
+      var code = val.charCodeAt(0)
+      if (code < 256) {
+        val = code
+      }
+    }
+    if (encoding !== undefined && typeof encoding !== 'string') {
+      throw new TypeError('encoding must be a string')
+    }
+    if (typeof encoding === 'string' && !Buffer.isEncoding(encoding)) {
+      throw new TypeError('Unknown encoding: ' + encoding)
+    }
+  } else if (typeof val === 'number') {
+    val = val & 255
+  }
 
-  if (end < start) throw new TypeError('end < start')
+  // Invalid ranges are not set to a default, so can range check early.
+  if (start < 0 || this.length < start || this.length < end) {
+    throw new RangeError('Out of range index')
+  }
 
-  // Fill 0 bytes; we're done
-  if (end === start) return
-  if (this.length === 0) return
+  if (end <= start) {
+    return this
+  }
 
-  if (start < 0 || start >= this.length) throw new TypeError('start out of bounds')
-  if (end < 0 || end > this.length) throw new TypeError('end out of bounds')
+  start = start >>> 0
+  end = end === undefined ? this.length : end >>> 0
+
+  if (!val) val = 0
 
   var i
-  if (typeof value === 'number') {
-    for (i = start; i < end; i++) {
-      this[i] = value
+  if (typeof val === 'number') {
+    for (i = start; i < end; ++i) {
+      this[i] = val
     }
   } else {
-    var bytes = utf8ToBytes(value.toString())
+    var bytes = Buffer.isBuffer(val)
+      ? val
+      : new Buffer(val, encoding)
     var len = bytes.length
-    for (i = start; i < end; i++) {
-      this[i] = bytes[i % len]
+    for (i = 0; i < end - start; ++i) {
+      this[i + start] = bytes[i % len]
     }
   }
 
   return this
 }
 
-/**
- * Creates a new `ArrayBuffer` with the *copied* memory of the buffer instance.
- * Added in Node 0.12. Only available in browsers that support ArrayBuffer.
- */
-Buffer.prototype.toArrayBuffer = function () {
-  if (typeof Uint8Array !== 'undefined') {
-    if (Buffer.TYPED_ARRAY_SUPPORT) {
-      return (new Buffer(this)).buffer
-    } else {
-      var buf = new Uint8Array(this.length)
-      for (var i = 0, len = buf.length; i < len; i += 1) {
-        buf[i] = this[i]
-      }
-      return buf.buffer
-    }
-  } else {
-    throw new TypeError('Buffer.toArrayBuffer not supported in this browser')
-  }
-}
-
 // HELPER FUNCTIONS
 // ================
 
-var BP = Buffer.prototype
-
-/**
- * Augment a Uint8Array *instance* (not the Uint8Array class!) with Buffer methods
- */
-Buffer._augment = function (arr) {
-  arr.constructor = Buffer
-  arr._isBuffer = true
-
-  // save reference to original Uint8Array get/set methods before overwriting
-  arr._get = arr.get
-  arr._set = arr.set
-
-  // deprecated, will be removed in node 0.13+
-  arr.get = BP.get
-  arr.set = BP.set
-
-  arr.write = BP.write
-  arr.toString = BP.toString
-  arr.toLocaleString = BP.toString
-  arr.toJSON = BP.toJSON
-  arr.equals = BP.equals
-  arr.compare = BP.compare
-  arr.copy = BP.copy
-  arr.slice = BP.slice
-  arr.readUInt8 = BP.readUInt8
-  arr.readUInt16LE = BP.readUInt16LE
-  arr.readUInt16BE = BP.readUInt16BE
-  arr.readUInt32LE = BP.readUInt32LE
-  arr.readUInt32BE = BP.readUInt32BE
-  arr.readInt8 = BP.readInt8
-  arr.readInt16LE = BP.readInt16LE
-  arr.readInt16BE = BP.readInt16BE
-  arr.readInt32LE = BP.readInt32LE
-  arr.readInt32BE = BP.readInt32BE
-  arr.readFloatLE = BP.readFloatLE
-  arr.readFloatBE = BP.readFloatBE
-  arr.readDoubleLE = BP.readDoubleLE
-  arr.readDoubleBE = BP.readDoubleBE
-  arr.writeUInt8 = BP.writeUInt8
-  arr.writeUInt16LE = BP.writeUInt16LE
-  arr.writeUInt16BE = BP.writeUInt16BE
-  arr.writeUInt32LE = BP.writeUInt32LE
-  arr.writeUInt32BE = BP.writeUInt32BE
-  arr.writeInt8 = BP.writeInt8
-  arr.writeInt16LE = BP.writeInt16LE
-  arr.writeInt16BE = BP.writeInt16BE
-  arr.writeInt32LE = BP.writeInt32LE
-  arr.writeInt32BE = BP.writeInt32BE
-  arr.writeFloatLE = BP.writeFloatLE
-  arr.writeFloatBE = BP.writeFloatBE
-  arr.writeDoubleLE = BP.writeDoubleLE
-  arr.writeDoubleBE = BP.writeDoubleBE
-  arr.fill = BP.fill
-  arr.inspect = BP.inspect
-  arr.toArrayBuffer = BP.toArrayBuffer
-
-  return arr
-}
-
-var INVALID_BASE64_RE = /[^+\/0-9A-z]/g
+var INVALID_BASE64_RE = /[^+/0-9A-Za-z-_]/g
 
 function base64clean (str) {
   // Node strips out invalid characters like \n and \t from the string, base64-js does not
   str = stringtrim(str).replace(INVALID_BASE64_RE, '')
+  // Node converts strings with length < 2 to ''
+  if (str.length < 2) return ''
   // Node allows for non-padded base64 strings (missing trailing ===), base64-js does not
   while (str.length % 4 !== 0) {
     str = str + '='
@@ -3075,48 +4155,106 @@ function stringtrim (str) {
   return str.replace(/^\s+|\s+$/g, '')
 }
 
-function isArrayish (subject) {
-  return isArray(subject) || Buffer.isBuffer(subject) ||
-      subject && typeof subject === 'object' &&
-      typeof subject.length === 'number'
-}
-
 function toHex (n) {
   if (n < 16) return '0' + n.toString(16)
   return n.toString(16)
 }
 
-function utf8ToBytes (str) {
-  var byteArray = []
-  for (var i = 0; i < str.length; i++) {
-    var b = str.charCodeAt(i)
-    if (b <= 0x7F) {
-      byteArray.push(b)
-    } else {
-      var start = i
-      if (b >= 0xD800 && b <= 0xDFFF) i++
-      var h = encodeURIComponent(str.slice(start, i+1)).substr(1).split('%')
-      for (var j = 0; j < h.length; j++) {
-        byteArray.push(parseInt(h[j], 16))
+function utf8ToBytes (string, units) {
+  units = units || Infinity
+  var codePoint
+  var length = string.length
+  var leadSurrogate = null
+  var bytes = []
+
+  for (var i = 0; i < length; ++i) {
+    codePoint = string.charCodeAt(i)
+
+    // is surrogate component
+    if (codePoint > 0xD7FF && codePoint < 0xE000) {
+      // last char was a lead
+      if (!leadSurrogate) {
+        // no lead yet
+        if (codePoint > 0xDBFF) {
+          // unexpected trail
+          if ((units -= 3) > -1) bytes.push(0xEF, 0xBF, 0xBD)
+          continue
+        } else if (i + 1 === length) {
+          // unpaired lead
+          if ((units -= 3) > -1) bytes.push(0xEF, 0xBF, 0xBD)
+          continue
+        }
+
+        // valid lead
+        leadSurrogate = codePoint
+
+        continue
       }
+
+      // 2 leads in a row
+      if (codePoint < 0xDC00) {
+        if ((units -= 3) > -1) bytes.push(0xEF, 0xBF, 0xBD)
+        leadSurrogate = codePoint
+        continue
+      }
+
+      // valid surrogate pair
+      codePoint = (leadSurrogate - 0xD800 << 10 | codePoint - 0xDC00) + 0x10000
+    } else if (leadSurrogate) {
+      // valid bmp char, but last char was a lead
+      if ((units -= 3) > -1) bytes.push(0xEF, 0xBF, 0xBD)
+    }
+
+    leadSurrogate = null
+
+    // encode utf8
+    if (codePoint < 0x80) {
+      if ((units -= 1) < 0) break
+      bytes.push(codePoint)
+    } else if (codePoint < 0x800) {
+      if ((units -= 2) < 0) break
+      bytes.push(
+        codePoint >> 0x6 | 0xC0,
+        codePoint & 0x3F | 0x80
+      )
+    } else if (codePoint < 0x10000) {
+      if ((units -= 3) < 0) break
+      bytes.push(
+        codePoint >> 0xC | 0xE0,
+        codePoint >> 0x6 & 0x3F | 0x80,
+        codePoint & 0x3F | 0x80
+      )
+    } else if (codePoint < 0x110000) {
+      if ((units -= 4) < 0) break
+      bytes.push(
+        codePoint >> 0x12 | 0xF0,
+        codePoint >> 0xC & 0x3F | 0x80,
+        codePoint >> 0x6 & 0x3F | 0x80,
+        codePoint & 0x3F | 0x80
+      )
+    } else {
+      throw new Error('Invalid code point')
     }
   }
-  return byteArray
+
+  return bytes
 }
 
 function asciiToBytes (str) {
   var byteArray = []
-  for (var i = 0; i < str.length; i++) {
+  for (var i = 0; i < str.length; ++i) {
     // Node's code seems to be doing this and not & 0x7F..
     byteArray.push(str.charCodeAt(i) & 0xFF)
   }
   return byteArray
 }
 
-function utf16leToBytes (str) {
+function utf16leToBytes (str, units) {
   var c, hi, lo
   var byteArray = []
-  for (var i = 0; i < str.length; i++) {
+  for (var i = 0; i < str.length; ++i) {
+    if ((units -= 2) < 0) break
+
     c = str.charCodeAt(i)
     hi = c >> 8
     lo = c % 256
@@ -3128,150 +4266,22 @@ function utf16leToBytes (str) {
 }
 
 function base64ToBytes (str) {
-  return base64.toByteArray(str)
+  return base64.toByteArray(base64clean(str))
 }
 
-function blitBuffer (src, dst, offset, length, unitSize) {
-  if (unitSize) length -= length % unitSize;
-  for (var i = 0; i < length; i++) {
-    if ((i + offset >= dst.length) || (i >= src.length))
-      break
+function blitBuffer (src, dst, offset, length) {
+  for (var i = 0; i < length; ++i) {
+    if ((i + offset >= dst.length) || (i >= src.length)) break
     dst[i + offset] = src[i]
   }
   return i
 }
 
-function decodeUtf8Char (str) {
-  try {
-    return decodeURIComponent(str)
-  } catch (err) {
-    return String.fromCharCode(0xFFFD) // UTF 8 invalid char
-  }
+function isnan (val) {
+  return val !== val // eslint-disable-line no-self-compare
 }
 
-},{"base64-js":7,"ieee754":35,"is-array":37}],7:[function(require,module,exports){
-var lookup = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
-
-;(function (exports) {
-	'use strict';
-
-  var Arr = (typeof Uint8Array !== 'undefined')
-    ? Uint8Array
-    : Array
-
-	var PLUS   = '+'.charCodeAt(0)
-	var SLASH  = '/'.charCodeAt(0)
-	var NUMBER = '0'.charCodeAt(0)
-	var LOWER  = 'a'.charCodeAt(0)
-	var UPPER  = 'A'.charCodeAt(0)
-
-	function decode (elt) {
-		var code = elt.charCodeAt(0)
-		if (code === PLUS)
-			return 62 // '+'
-		if (code === SLASH)
-			return 63 // '/'
-		if (code < NUMBER)
-			return -1 //no match
-		if (code < NUMBER + 10)
-			return code - NUMBER + 26 + 26
-		if (code < UPPER + 26)
-			return code - UPPER
-		if (code < LOWER + 26)
-			return code - LOWER + 26
-	}
-
-	function b64ToByteArray (b64) {
-		var i, j, l, tmp, placeHolders, arr
-
-		if (b64.length % 4 > 0) {
-			throw new Error('Invalid string. Length must be a multiple of 4')
-		}
-
-		// the number of equal signs (place holders)
-		// if there are two placeholders, than the two characters before it
-		// represent one byte
-		// if there is only one, then the three characters before it represent 2 bytes
-		// this is just a cheap hack to not do indexOf twice
-		var len = b64.length
-		placeHolders = '=' === b64.charAt(len - 2) ? 2 : '=' === b64.charAt(len - 1) ? 1 : 0
-
-		// base64 is 4/3 + up to two characters of the original data
-		arr = new Arr(b64.length * 3 / 4 - placeHolders)
-
-		// if there are placeholders, only get up to the last complete 4 chars
-		l = placeHolders > 0 ? b64.length - 4 : b64.length
-
-		var L = 0
-
-		function push (v) {
-			arr[L++] = v
-		}
-
-		for (i = 0, j = 0; i < l; i += 4, j += 3) {
-			tmp = (decode(b64.charAt(i)) << 18) | (decode(b64.charAt(i + 1)) << 12) | (decode(b64.charAt(i + 2)) << 6) | decode(b64.charAt(i + 3))
-			push((tmp & 0xFF0000) >> 16)
-			push((tmp & 0xFF00) >> 8)
-			push(tmp & 0xFF)
-		}
-
-		if (placeHolders === 2) {
-			tmp = (decode(b64.charAt(i)) << 2) | (decode(b64.charAt(i + 1)) >> 4)
-			push(tmp & 0xFF)
-		} else if (placeHolders === 1) {
-			tmp = (decode(b64.charAt(i)) << 10) | (decode(b64.charAt(i + 1)) << 4) | (decode(b64.charAt(i + 2)) >> 2)
-			push((tmp >> 8) & 0xFF)
-			push(tmp & 0xFF)
-		}
-
-		return arr
-	}
-
-	function uint8ToBase64 (uint8) {
-		var i,
-			extraBytes = uint8.length % 3, // if we have 1 byte left, pad 2 bytes
-			output = "",
-			temp, length
-
-		function encode (num) {
-			return lookup.charAt(num)
-		}
-
-		function tripletToBase64 (num) {
-			return encode(num >> 18 & 0x3F) + encode(num >> 12 & 0x3F) + encode(num >> 6 & 0x3F) + encode(num & 0x3F)
-		}
-
-		// go through the array every three bytes, we'll deal with trailing stuff later
-		for (i = 0, length = uint8.length - extraBytes; i < length; i += 3) {
-			temp = (uint8[i] << 16) + (uint8[i + 1] << 8) + (uint8[i + 2])
-			output += tripletToBase64(temp)
-		}
-
-		// pad the end with zeros, but make sure to not forget the extra bytes
-		switch (extraBytes) {
-			case 1:
-				temp = uint8[uint8.length - 1]
-				output += encode(temp >> 2)
-				output += encode((temp << 4) & 0x3F)
-				output += '=='
-				break
-			case 2:
-				temp = (uint8[uint8.length - 2] << 8) + (uint8[uint8.length - 1])
-				output += encode(temp >> 10)
-				output += encode((temp >> 4) & 0x3F)
-				output += encode((temp << 2) & 0x3F)
-				output += '='
-				break
-		}
-
-		return output
-	}
-
-	exports.toByteArray = b64ToByteArray
-	exports.fromByteArray = uint8ToBase64
-}(typeof exports === 'undefined' ? (this.base64js = {}) : exports))
-
-},{}],8:[function(require,module,exports){
+},{"base64-js":5,"ieee754":35}],10:[function(require,module,exports){
 (function (Buffer){
 'use strict';
 
@@ -3403,7 +4413,7 @@ clone.clonePrototype = function(parent) {
 };
 
 }).call(this,require("buffer").Buffer)
-},{"buffer":6}],9:[function(require,module,exports){
+},{"buffer":9}],11:[function(require,module,exports){
 var dsv = require('dsv'),
     sexagesimal = require('sexagesimal');
 
@@ -3590,7 +4600,7 @@ module.exports = {
     toPolygon: toPolygon
 };
 
-},{"dsv":16,"sexagesimal":88}],10:[function(require,module,exports){
+},{"dsv":18,"sexagesimal":91}],12:[function(require,module,exports){
 if (typeof module !== 'undefined') {
     module.exports = function(d3) {
         return metatable;
@@ -3781,10 +4791,10 @@ function metatable() {
     return d3.rebind(table, event, 'on');
 }
 
-},{}],11:[function(require,module,exports){
+},{}],13:[function(require,module,exports){
 module.exports.structure = require('./src/structure');
 
-},{"./src/structure":15}],12:[function(require,module,exports){
+},{"./src/structure":17}],14:[function(require,module,exports){
 var fieldSize = require('./fieldsize');
 
 var types = {
@@ -3828,7 +4838,7 @@ function bytesPer(fields) {
     return fields.reduce(function(memo, f) { return memo + f.size; }, 1);
 }
 
-},{"./fieldsize":13}],13:[function(require,module,exports){
+},{"./fieldsize":15}],15:[function(require,module,exports){
 module.exports = {
     // string
     C: 254,
@@ -3846,7 +4856,7 @@ module.exports = {
     B: 8,
 };
 
-},{}],14:[function(require,module,exports){
+},{}],16:[function(require,module,exports){
 module.exports.lpad = function lpad(str, len, char) {
     while (str.length < len) { str = char + str; } return str;
 };
@@ -3862,7 +4872,7 @@ module.exports.writeField = function writeField(view, fieldLength, str, offset) 
     return offset;
 };
 
-},{}],15:[function(require,module,exports){
+},{}],17:[function(require,module,exports){
 var fieldSize = require('./fieldsize'),
     lib = require('./lib'),
     fields = require('./fields');
@@ -3959,12 +4969,12 @@ module.exports = function structure(data) {
     return view;
 };
 
-},{"./fields":12,"./fieldsize":13,"./lib":14}],16:[function(require,module,exports){
+},{"./fields":14,"./fieldsize":15,"./lib":16}],18:[function(require,module,exports){
 
 
 module.exports = new Function("dsv.version = \"0.0.3\";\n\ndsv.tsv = dsv(\"\\t\");\ndsv.csv = dsv(\",\");\n\nfunction dsv(delimiter) {\n  var dsv = {},\n      reFormat = new RegExp(\"[\\\"\" + delimiter + \"\\n]\"),\n      delimiterCode = delimiter.charCodeAt(0);\n\n  dsv.parse = function(text, f) {\n    var o;\n    return dsv.parseRows(text, function(row, i) {\n      if (o) return o(row, i - 1);\n      var a = new Function(\"d\", \"return {\" + row.map(function(name, i) {\n        return JSON.stringify(name) + \": d[\" + i + \"]\";\n      }).join(\",\") + \"}\");\n      o = f ? function(row, i) { return f(a(row), i); } : a;\n    });\n  };\n\n  dsv.parseRows = function(text, f) {\n    var EOL = {}, // sentinel value for end-of-line\n        EOF = {}, // sentinel value for end-of-file\n        rows = [], // output rows\n        N = text.length,\n        I = 0, // current character index\n        n = 0, // the current line number\n        t, // the current token\n        eol; // is the current token followed by EOL?\n\n    function token() {\n      if (I >= N) return EOF; // special case: end of file\n      if (eol) return eol = false, EOL; // special case: end of line\n\n      // special case: quotes\n      var j = I;\n      if (text.charCodeAt(j) === 34) {\n        var i = j;\n        while (i++ < N) {\n          if (text.charCodeAt(i) === 34) {\n            if (text.charCodeAt(i + 1) !== 34) break;\n            ++i;\n          }\n        }\n        I = i + 2;\n        var c = text.charCodeAt(i + 1);\n        if (c === 13) {\n          eol = true;\n          if (text.charCodeAt(i + 2) === 10) ++I;\n        } else if (c === 10) {\n          eol = true;\n        }\n        return text.substring(j + 1, i).replace(/\"\"/g, \"\\\"\");\n      }\n\n      // common case: find next delimiter or newline\n      while (I < N) {\n        var c = text.charCodeAt(I++), k = 1;\n        if (c === 10) eol = true; // \\n\n        else if (c === 13) { eol = true; if (text.charCodeAt(I) === 10) ++I, ++k; } // \\r|\\r\\n\n        else if (c !== delimiterCode) continue;\n        return text.substring(j, I - k);\n      }\n\n      // special case: last token before EOF\n      return text.substring(j);\n    }\n\n    while ((t = token()) !== EOF) {\n      var a = [];\n      while (t !== EOL && t !== EOF) {\n        a.push(t);\n        t = token();\n      }\n      if (f && !(a = f(a, n++))) continue;\n      rows.push(a);\n    }\n\n    return rows;\n  };\n\n  dsv.format = function(rows) {\n    if (Array.isArray(rows[0])) return dsv.formatRows(rows); // deprecated; use formatRows\n    var fieldSet = {}, fields = [];\n\n    // Compute unique fields in order of discovery.\n    rows.forEach(function(row) {\n      for (var field in row) {\n        if (!(field in fieldSet)) {\n          fields.push(fieldSet[field] = field);\n        }\n      }\n    });\n\n    return [fields.map(formatValue).join(delimiter)].concat(rows.map(function(row) {\n      return fields.map(function(field) {\n        return formatValue(row[field]);\n      }).join(delimiter);\n    })).join(\"\\n\");\n  };\n\n  dsv.formatRows = function(rows) {\n    return rows.map(formatRow).join(\"\\n\");\n  };\n\n  function formatRow(row) {\n    return row.map(formatValue).join(delimiter);\n  }\n\n  function formatValue(text) {\n    return reFormat.test(text) ? \"\\\"\" + text.replace(/\\\"/g, \"\\\"\\\"\") + \"\\\"\" : text;\n  }\n\n  return dsv;\n}\n" + ";return dsv")();
 
-},{}],17:[function(require,module,exports){
+},{}],19:[function(require,module,exports){
 /*!
  * escape-html
  * Copyright(c) 2012-2013 TJ Holowaychuk
@@ -4044,7 +5054,7 @@ function escapeHtml(string) {
     : html;
 }
 
-},{}],18:[function(require,module,exports){
+},{}],20:[function(require,module,exports){
 module.exports = Extent;
 
 function Extent() {
@@ -4107,7 +5117,7 @@ Extent.prototype.polygon = function() {
     };
 };
 
-},{}],19:[function(require,module,exports){
+},{}],21:[function(require,module,exports){
 /* FileSaver.js
  *  A saveAs() FileSaver implementation.
  *  2014-05-27
@@ -4350,7 +5360,7 @@ if (typeof module !== "undefined" && module !== null) {
   });
 }
 
-},{}],20:[function(require,module,exports){
+},{}],22:[function(require,module,exports){
 var wgs84 = require('wgs84');
 
 module.exports = function(_) {
@@ -4412,7 +5422,7 @@ function rad(_) {
     return _ * Math.PI / 180;
 }
 
-},{"wgs84":142}],21:[function(require,module,exports){
+},{"wgs84":144}],23:[function(require,module,exports){
 module.exports = function flatten(list, depth) {
     return _flatten(list);
 
@@ -4432,7 +5442,7 @@ module.exports = function flatten(list, depth) {
     }
 };
 
-},{}],22:[function(require,module,exports){
+},{}],24:[function(require,module,exports){
 var geojsonNormalize = require('geojson-normalize'),
     geojsonFlatten = require('geojson-flatten'),
     flatten = require('./flatten');
@@ -4448,7 +5458,7 @@ module.exports = function(_) {
     return coordinates;
 };
 
-},{"./flatten":21,"geojson-flatten":24,"geojson-normalize":25}],23:[function(require,module,exports){
+},{"./flatten":23,"geojson-flatten":26,"geojson-normalize":27}],25:[function(require,module,exports){
 var geojsonCoords = require('geojson-coords'),
     traverse = require('traverse'),
     extent = require('extent');
@@ -4478,7 +5488,7 @@ function getExtent(_) {
     return ext;
 }
 
-},{"extent":18,"geojson-coords":22,"traverse":137}],24:[function(require,module,exports){
+},{"extent":20,"geojson-coords":24,"traverse":138}],26:[function(require,module,exports){
 module.exports = flatten;
 
 function flatten(gj, up) {
@@ -4519,7 +5529,7 @@ function flatten(gj, up) {
     }
 }
 
-},{}],25:[function(require,module,exports){
+},{}],27:[function(require,module,exports){
 module.exports = normalize;
 
 var types = {
@@ -4564,7 +5574,7 @@ function normalize(gj) {
     }
 }
 
-},{}],26:[function(require,module,exports){
+},{}],28:[function(require,module,exports){
 module.exports = function(count, type) {
     switch (type) {
         case 'point':
@@ -4583,7 +5593,7 @@ function feature(geom) {
 }
 function collection(f) { return { type: 'FeatureCollection', features: f }; }
 
-},{}],27:[function(require,module,exports){
+},{}],29:[function(require,module,exports){
 var geojsonArea = require('geojson-area');
 
 module.exports = rewind;
@@ -4619,9 +5629,9 @@ function correct(_, outer) {
 
 function correctRings(_, outer) {
     outer = !!outer;
-    _[0] = wind(_[0], !outer);
+    _[0] = wind(_[0], outer);
     for (var i = 1; i < _.length; i++) {
-        _[i] = wind(_[i], outer);
+        _[i] = wind(_[i], !outer);
     }
     return _;
 }
@@ -4634,7 +5644,7 @@ function cw(_) {
     return geojsonArea.ring(_) >= 0;
 }
 
-},{"geojson-area":28}],28:[function(require,module,exports){
+},{"geojson-area":30}],30:[function(require,module,exports){
 var wgs84 = require('wgs84');
 
 module.exports.geometry = geometry;
@@ -4700,7 +5710,7 @@ function rad(_) {
     return _ * Math.PI / 180;
 }
 
-},{"wgs84":142}],29:[function(require,module,exports){
+},{"wgs84":144}],31:[function(require,module,exports){
 var dsv = require('dsv');
 
 module.exports = function(_, delim) {
@@ -4727,7 +5737,7 @@ module.exports = function(_, delim) {
     }));
 };
 
-},{"dsv":16}],30:[function(require,module,exports){
+},{"dsv":18}],32:[function(require,module,exports){
 var jsonlint = require('jsonlint-lines');
 
 function hint(str) {
@@ -5046,7 +6056,163 @@ function hint(str) {
 
 module.exports.hint = hint;
 
-},{"jsonlint-lines":31}],31:[function(require,module,exports){
+},{"jsonlint-lines":37}],33:[function(require,module,exports){
+var parseCSV = require('dsv').csv.parse;
+
+/**
+ * Parse GTFS data given as a string and return a GeoJSON FeatureCollection
+ * of features with LineString geometries.
+ *
+ * @param {string} gtfs csv content of shapes.txt
+ * @returns {Object} geojson featurecollection
+ */
+function gtfs2geojson(gtfs) {
+  var shapes = parseCSV(gtfs).reduce(function(memo, row) {
+    memo[row.shape_id] = (memo[row.shape_id] || []).concat(row);
+    return memo;
+  }, {});
+  return {
+    type: 'FeatureCollection',
+    features: Object.keys(shapes).map(function(id) {
+      return {
+        type: 'Feature',
+        id: id,
+        properties: {
+          shape_id: id
+        },
+        geometry: {
+          type: 'LineString',
+          coordinates: shapes[id].sort(function(a, b) {
+            return +a.shape_pt_sequence - b.shape_pt_sequence;
+          }).map(function(coord) {
+            return [
+              parseFloat(coord.shape_pt_lon),
+              parseFloat(coord.shape_pt_lat)
+            ];
+          })
+        }
+      };
+    })
+  };
+}
+
+module.exports = gtfs2geojson;
+
+},{"dsv":34}],34:[function(require,module,exports){
+
+
+module.exports = new Function("dsv.version = \"0.0.4\";\n\ndsv.tsv = dsv(\"\\t\");\ndsv.csv = dsv(\",\");\n\nfunction dsv(delimiter) {\n  var dsv = {},\n      reFormat = new RegExp(\"[\\\"\" + delimiter + \"\\n]\"),\n      delimiterCode = delimiter.charCodeAt(0);\n\n  dsv.parse = function(text, f) {\n    var o;\n    return dsv.parseRows(text, function(row, i) {\n      if (o) return o(row, i - 1);\n      var a = new Function(\"d\", \"return {\" + row.map(function(name, i) {\n        return JSON.stringify(name) + \": d[\" + i + \"]\";\n      }).join(\",\") + \"}\");\n      o = f ? function(row, i) { return f(a(row), i); } : a;\n    });\n  };\n\n  dsv.parseRows = function(text, f) {\n    var EOL = {}, // sentinel value for end-of-line\n        EOF = {}, // sentinel value for end-of-file\n        rows = [], // output rows\n        N = text.length,\n        I = 0, // current character index\n        n = 0, // the current line number\n        t, // the current token\n        eol; // is the current token followed by EOL?\n\n    function token() {\n      if (I >= N) return EOF; // special case: end of file\n      if (eol) return eol = false, EOL; // special case: end of line\n\n      // special case: quotes\n      var j = I;\n      if (text.charCodeAt(j) === 34) {\n        var i = j;\n        while (i++ < N) {\n          if (text.charCodeAt(i) === 34) {\n            if (text.charCodeAt(i + 1) !== 34) break;\n            ++i;\n          }\n        }\n        I = i + 2;\n        var c = text.charCodeAt(i + 1);\n        if (c === 13) {\n          eol = true;\n          if (text.charCodeAt(i + 2) === 10) ++I;\n        } else if (c === 10) {\n          eol = true;\n        }\n        return text.slice(j + 1, i).replace(/\"\"/g, \"\\\"\");\n      }\n\n      // common case: find next delimiter or newline\n      while (I < N) {\n        var c = text.charCodeAt(I++), k = 1;\n        if (c === 10) eol = true; // \\n\n        else if (c === 13) { eol = true; if (text.charCodeAt(I) === 10) ++I, ++k; } // \\r|\\r\\n\n        else if (c !== delimiterCode) continue;\n        return text.slice(j, I - k);\n      }\n\n      // special case: last token before EOF\n      return text.slice(j);\n    }\n\n    while ((t = token()) !== EOF) {\n      var a = [];\n      while (t !== EOL && t !== EOF) {\n        a.push(t);\n        t = token();\n      }\n      if (f && (a = f(a, n++)) == null) continue;\n      rows.push(a);\n    }\n\n    return rows;\n  };\n\n  dsv.format = function(rows) {\n    if (Array.isArray(rows[0])) return dsv.formatRows(rows); // deprecated; use formatRows\n    var fieldSet = {}, fields = [];\n\n    // Compute unique fields in order of discovery.\n    rows.forEach(function(row) {\n      for (var field in row) {\n        if (!(field in fieldSet)) {\n          fields.push(fieldSet[field] = field);\n        }\n      }\n    });\n\n    return [fields.map(formatValue).join(delimiter)].concat(rows.map(function(row) {\n      return fields.map(function(field) {\n        return formatValue(row[field]);\n      }).join(delimiter);\n    })).join(\"\\n\");\n  };\n\n  dsv.formatRows = function(rows) {\n    return rows.map(formatRow).join(\"\\n\");\n  };\n\n  function formatRow(row) {\n    return row.map(formatValue).join(delimiter);\n  }\n\n  function formatValue(text) {\n    return reFormat.test(text) ? \"\\\"\" + text.replace(/\\\"/g, \"\\\"\\\"\") + \"\\\"\" : text;\n  }\n\n  return dsv;\n}\n" + ";return dsv")();
+
+},{}],35:[function(require,module,exports){
+exports.read = function (buffer, offset, isLE, mLen, nBytes) {
+  var e, m
+  var eLen = nBytes * 8 - mLen - 1
+  var eMax = (1 << eLen) - 1
+  var eBias = eMax >> 1
+  var nBits = -7
+  var i = isLE ? (nBytes - 1) : 0
+  var d = isLE ? -1 : 1
+  var s = buffer[offset + i]
+
+  i += d
+
+  e = s & ((1 << (-nBits)) - 1)
+  s >>= (-nBits)
+  nBits += eLen
+  for (; nBits > 0; e = e * 256 + buffer[offset + i], i += d, nBits -= 8) {}
+
+  m = e & ((1 << (-nBits)) - 1)
+  e >>= (-nBits)
+  nBits += mLen
+  for (; nBits > 0; m = m * 256 + buffer[offset + i], i += d, nBits -= 8) {}
+
+  if (e === 0) {
+    e = 1 - eBias
+  } else if (e === eMax) {
+    return m ? NaN : ((s ? -1 : 1) * Infinity)
+  } else {
+    m = m + Math.pow(2, mLen)
+    e = e - eBias
+  }
+  return (s ? -1 : 1) * m * Math.pow(2, e - mLen)
+}
+
+exports.write = function (buffer, value, offset, isLE, mLen, nBytes) {
+  var e, m, c
+  var eLen = nBytes * 8 - mLen - 1
+  var eMax = (1 << eLen) - 1
+  var eBias = eMax >> 1
+  var rt = (mLen === 23 ? Math.pow(2, -24) - Math.pow(2, -77) : 0)
+  var i = isLE ? 0 : (nBytes - 1)
+  var d = isLE ? 1 : -1
+  var s = value < 0 || (value === 0 && 1 / value < 0) ? 1 : 0
+
+  value = Math.abs(value)
+
+  if (isNaN(value) || value === Infinity) {
+    m = isNaN(value) ? 1 : 0
+    e = eMax
+  } else {
+    e = Math.floor(Math.log(value) / Math.LN2)
+    if (value * (c = Math.pow(2, -e)) < 1) {
+      e--
+      c *= 2
+    }
+    if (e + eBias >= 1) {
+      value += rt / c
+    } else {
+      value += rt * Math.pow(2, 1 - eBias)
+    }
+    if (value * c >= 2) {
+      e++
+      c /= 2
+    }
+
+    if (e + eBias >= eMax) {
+      m = 0
+      e = eMax
+    } else if (e + eBias >= 1) {
+      m = (value * c - 1) * Math.pow(2, mLen)
+      e = e + eBias
+    } else {
+      m = value * Math.pow(2, eBias - 1) * Math.pow(2, mLen)
+      e = 0
+    }
+  }
+
+  for (; mLen >= 8; buffer[offset + i] = m & 0xff, i += d, m /= 256, mLen -= 8) {}
+
+  e = (e << mLen) | m
+  eLen += mLen
+  for (; eLen > 0; buffer[offset + i] = e & 0xff, i += d, e /= 256, eLen -= 8) {}
+
+  buffer[offset + i - d] |= s * 128
+}
+
+},{}],36:[function(require,module,exports){
+/*!
+ * Determine if an object is a Buffer
+ *
+ * @author   Feross Aboukhadijeh <feross@feross.org> <http://feross.org>
+ * @license  MIT
+ */
+
+// The _isBuffer check is for Safari 5-7 support, because it's missing
+// Object.prototype.constructor. Remove this eventually
+module.exports = function (obj) {
+  return obj != null && (isBuffer(obj) || isSlowBuffer(obj) || !!obj._isBuffer)
+}
+
+function isBuffer (obj) {
+  return !!obj.constructor && typeof obj.constructor.isBuffer === 'function' && obj.constructor.isBuffer(obj)
+}
+
+// For Node v0.10 support. Remove this eventually.
+function isSlowBuffer (obj) {
+  return typeof obj.readFloatLE === 'function' && typeof obj.slice === 'function' && isBuffer(obj.slice(0, 0))
+}
+
+},{}],37:[function(require,module,exports){
 (function (process){
 /* parser generated by jison 0.4.6 */
 /*
@@ -5702,427 +6868,8 @@ if (typeof module !== 'undefined' && require.main === module) {
   exports.main(process.argv.slice(1));
 }
 }
-}).call(this,require("g5I+bs"))
-},{"fs":5,"g5I+bs":85,"path":83}],32:[function(require,module,exports){
-var request = require('browser-request'),
-    token;
-
-var base = 'https://api.github.com';
-
-module.exports = function(_, endpoint) {
-    token = _;
-    base = endpoint || base;
-    return module.exports;
-};
-
-module.exports.open = open;
-
-function ce(t, k) {
-    var elem = document.createElement(t);
-    if (k) elem.className = k;
-    return elem;
-}
-
-function open() {
-    var container = ce('div', 'gist-map-browser'),
-        p = 0;
-
-    function loadPage() {
-        page('/gists?page=' + p, function(err, res) {
-            if (err) throw err;
-            res.filter(isMap).forEach(append);
-            appendNext();
-        });
-    }
-
-    var onclick = function(elem) { };
-
-    function isMap(gist) {
-        var is = false;
-        for (var i in gist.files) {
-            if (i.match(/\.(geo)?json/i)) is = true;
-        }
-        return is;
-    }
-
-    function appendNext(n) {
-        var olds = container.getElementsByClassName('gist-map-next');
-        for (var i = 0; i < olds.length; i++) { olds[i].parentNode.removeChild(olds[i]); }
-        var c = container.appendChild(ce('div', 'gist-map-next'));
-        c.innerHTML = 'load more';
-        c.onclick = function() {
-            p++;
-            loadPage();
-        };
-    }
-
-    function append(gist) {
-        var c = container.appendChild(ce('div', 'gist-map-item'));
-        var t = c.appendChild(ce('div', 'gist-map-title'));
-        t.innerHTML = gist.description;
-        var contents = c.appendChild(ce('div', 'gist-map-contents'));
-        contents.innerHTML = Object.keys(gist.files).join(', ');
-        c.onclick = function(elem) {
-            page('/gists/' + gist.id, function(err, res){
-                onclick(res, elem);
-            });
-        };
-    }
-
-    var o = {
-        container: container,
-        onclick: function(_) {
-            onclick = _;
-            return o;
-        },
-        appendTo: function(elem) {
-            elem.appendChild(container);
-            return o;
-        }
-    };
-
-    loadPage();
-
-    return o;
-}
-
-function page(postfix, callback) {
-    request({
-        uri: base + postfix,
-        headers: {
-            Authorization: 'token ' + token
-        },
-        json: true,
-        crossOrigin: true
-    }, function(err, res, body) {
-        callback(null, body);
-    });
-}
-
-},{"browser-request":3}],33:[function(require,module,exports){
-var queue = require('queue-async'),
-    request = require('browser-request'),
-    treeui = require('treeui'),
-    token;
-
-var base = 'https://api.github.com';
-
-var create = false;
-
-module.exports = function(_, _create,endpoint) {
-    token = _;
-    if (_create !== undefined) create = _create;
-    base = endpoint || base;
-    return module.exports;
-};
-
-module.exports.open = open;
-module.exports.request = req;
-
-function open() {
-
-    var out = treeui(treeRequest)
-        .expandable(function(res) {
-            var last = res[res.length - 1];
-            return last.type !== 'blob' && last.type !== 'commit' &&
-                last.type !== 'new';
-        })
-        .display(function(res) {
-            var last = res[res.length - 1];
-            return last.name || last.login || last.path;
-        });
-
-    return out;
-}
-
-function treeRequest(tree, callback) {
-    if (tree.length === 0) {
-        req('/user', function(err, user) {
-            req('/user/orgs', function(err, res) {
-                var orgs = res.map(function(_) {
-                    return [_];
-                });
-                callback(null, [user].concat(orgs));
-            });
-        });
-    } else if (tree.length === 1) {
-        if (tree[0].type === 'User') {
-            req('/users/' + tree[0].login + '/repos', function(err, res) {
-                callback(null, res.map(function(_) {
-                    return [tree[0], _];
-                }));
-            });
-        } else {
-            req('/orgs/' + tree[0].login + '/repos', function(err, res) {
-                callback(null, res.map(function(_) {
-                    return [tree[0], _];
-                }));
-            });
-        }
-    } else if (tree.length === 2) {
-        req('/repos/' + tree[1].full_name + '/branches', function(err, res) {
-            callback(null, res.map(function(_) {
-                return [tree[0], tree[1], _];
-            }));
-        });
-    } else if (tree.length === 3) {
-        req('/repos/' + tree[1].full_name + '/git/trees/' + tree[2].commit.sha, function(err, res) {
-            var r = [];
-            if (!res.length && res.tree) res = [res];
-            for (var i = 0; i < res.length; i++) {
-                for (var j = 0; j < res[i].tree.length; j++) {
-                    r.push([tree[0], tree[1], tree[2], res[i].tree[j]]);
-                }
-            }
-            if (create) {
-                r.push([tree[0], tree[1], tree[2], {
-                    type: 'new',
-                    name: '+ New File'
-                }]);
-            }
-            callback(null, r);
-        });
-    } else if (tree.length > 3) {
-        req('/repos/' + tree[1].full_name + '/git/trees/' + tree[tree.length - 1].sha, function(err, res) {
-            var r = [];
-            if (!res.length && res.tree) res = [res];
-            for (var i = 0; i < res.length; i++) {
-                for (var j = 0; j < res[i].tree.length; j++) {
-                    r.push(tree.concat([res[i].tree[j]]));
-                }
-            }
-            if (create) {
-                r.push([tree[0], tree[1], tree[2], {
-                    type: 'new',
-                    name: '+ New File'
-                }]);
-            }
-            callback(null, r);
-        });
-    }
-}
-
-function req(postfix, callback) {
-    var q = queue(1);
-    q.defer(page, null)
-        .awaitAll(function(err, res) {
-            if (res) {
-                var flat = res.reduce(function(mem, r) {
-                    return mem.concat(r);
-                }, []);
-                callback(err, flat);
-            } else {
-                callback(err);
-            }
-        });
-
-    function page(url, callback) {
-        request({
-            uri: url || base + postfix,
-            headers: {
-                Authorization: 'token ' + token
-            },
-            json: true,
-            crossOrigin: true
-        }, function(err, res, body) {
-            var link = (res.getResponseHeader('Link') || '').match(/\<([^\>]+)\>\; rel="next"/);
-            if (link) {
-                q.defer(page, link[1]);
-            }
-            callback(null, body);
-        });
-    }
-}
-
-},{"browser-request":3,"queue-async":87,"treeui":138}],34:[function(require,module,exports){
-var parseCSV = require('dsv').csv.parse;
-
-/**
- * Parse GTFS data given as a string and return a GeoJSON FeatureCollection
- * of features with LineString geometries.
- *
- * @param {string} gtfs csv content of shapes.txt
- * @returns {Object} geojson featurecollection
- */
-function gtfs2geojson(gtfs) {
-  var shapes = parseCSV(gtfs).reduce(function(memo, row) {
-    memo[row.shape_id] = (memo[row.shape_id] || []).concat(row);
-    return memo;
-  }, {});
-  return {
-    type: 'FeatureCollection',
-    features: Object.keys(shapes).map(function(id) {
-      return {
-        type: 'Feature',
-        id: id,
-        properties: {
-          shape_id: id
-        },
-        geometry: {
-          type: 'LineString',
-          coordinates: shapes[id].sort(function(a, b) {
-            return +a.shape_pt_sequence - b.shape_pt_sequence;
-          }).map(function(coord) {
-            return [
-              parseFloat(coord.shape_pt_lon),
-              parseFloat(coord.shape_pt_lat)
-            ];
-          })
-        }
-      };
-    })
-  };
-}
-
-module.exports = gtfs2geojson;
-
-},{"dsv":16}],35:[function(require,module,exports){
-exports.read = function (buffer, offset, isLE, mLen, nBytes) {
-  var e, m
-  var eLen = nBytes * 8 - mLen - 1
-  var eMax = (1 << eLen) - 1
-  var eBias = eMax >> 1
-  var nBits = -7
-  var i = isLE ? (nBytes - 1) : 0
-  var d = isLE ? -1 : 1
-  var s = buffer[offset + i]
-
-  i += d
-
-  e = s & ((1 << (-nBits)) - 1)
-  s >>= (-nBits)
-  nBits += eLen
-  for (; nBits > 0; e = e * 256 + buffer[offset + i], i += d, nBits -= 8) {}
-
-  m = e & ((1 << (-nBits)) - 1)
-  e >>= (-nBits)
-  nBits += mLen
-  for (; nBits > 0; m = m * 256 + buffer[offset + i], i += d, nBits -= 8) {}
-
-  if (e === 0) {
-    e = 1 - eBias
-  } else if (e === eMax) {
-    return m ? NaN : ((s ? -1 : 1) * Infinity)
-  } else {
-    m = m + Math.pow(2, mLen)
-    e = e - eBias
-  }
-  return (s ? -1 : 1) * m * Math.pow(2, e - mLen)
-}
-
-exports.write = function (buffer, value, offset, isLE, mLen, nBytes) {
-  var e, m, c
-  var eLen = nBytes * 8 - mLen - 1
-  var eMax = (1 << eLen) - 1
-  var eBias = eMax >> 1
-  var rt = (mLen === 23 ? Math.pow(2, -24) - Math.pow(2, -77) : 0)
-  var i = isLE ? 0 : (nBytes - 1)
-  var d = isLE ? 1 : -1
-  var s = value < 0 || (value === 0 && 1 / value < 0) ? 1 : 0
-
-  value = Math.abs(value)
-
-  if (isNaN(value) || value === Infinity) {
-    m = isNaN(value) ? 1 : 0
-    e = eMax
-  } else {
-    e = Math.floor(Math.log(value) / Math.LN2)
-    if (value * (c = Math.pow(2, -e)) < 1) {
-      e--
-      c *= 2
-    }
-    if (e + eBias >= 1) {
-      value += rt / c
-    } else {
-      value += rt * Math.pow(2, 1 - eBias)
-    }
-    if (value * c >= 2) {
-      e++
-      c /= 2
-    }
-
-    if (e + eBias >= eMax) {
-      m = 0
-      e = eMax
-    } else if (e + eBias >= 1) {
-      m = (value * c - 1) * Math.pow(2, mLen)
-      e = e + eBias
-    } else {
-      m = value * Math.pow(2, eBias - 1) * Math.pow(2, mLen)
-      e = 0
-    }
-  }
-
-  for (; mLen >= 8; buffer[offset + i] = m & 0xff, i += d, m /= 256, mLen -= 8) {}
-
-  e = (e << mLen) | m
-  eLen += mLen
-  for (; eLen > 0; buffer[offset + i] = e & 0xff, i += d, e /= 256, eLen -= 8) {}
-
-  buffer[offset + i - d] |= s * 128
-}
-
-},{}],36:[function(require,module,exports){
-if (typeof Object.create === 'function') {
-  // implementation from standard node.js 'util' module
-  module.exports = function inherits(ctor, superCtor) {
-    ctor.super_ = superCtor
-    ctor.prototype = Object.create(superCtor.prototype, {
-      constructor: {
-        value: ctor,
-        enumerable: false,
-        writable: true,
-        configurable: true
-      }
-    });
-  };
-} else {
-  // old school shim for old browsers
-  module.exports = function inherits(ctor, superCtor) {
-    ctor.super_ = superCtor
-    var TempCtor = function () {}
-    TempCtor.prototype = superCtor.prototype
-    ctor.prototype = new TempCtor()
-    ctor.prototype.constructor = ctor
-  }
-}
-
-},{}],37:[function(require,module,exports){
-
-/**
- * isArray
- */
-
-var isArray = Array.isArray;
-
-/**
- * toString
- */
-
-var str = Object.prototype.toString;
-
-/**
- * Whether or not the given `val`
- * is an array.
- *
- * example:
- *
- *        isArray([]);
- *        // > true
- *        isArray(arguments);
- *        // > false
- *        isArray('');
- *        // > false
- *
- * @param {mixed} val
- * @return {bool}
- */
-
-module.exports = isArray || function (val) {
-  return !! val && '[object Array]' == str.call(val);
-};
-
-},{}],38:[function(require,module,exports){
+}).call(this,require('_process'))
+},{"_process":88,"fs":8,"path":85}],38:[function(require,module,exports){
 'use strict';
 // private property
 var _keyStr = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=";
@@ -6590,7 +7337,7 @@ exports.uncompress =  function(input) {
     return pako.inflateRaw(input);
 };
 
-},{"pako":67}],46:[function(require,module,exports){
+},{"pako":69}],46:[function(require,module,exports){
 'use strict';
 
 var base64 = require('./base64');
@@ -6715,7 +7462,7 @@ module.exports.test = function(b){
 };
 
 }).call(this,require("buffer").Buffer)
-},{"buffer":6}],49:[function(require,module,exports){
+},{"buffer":9}],49:[function(require,module,exports){
 'use strict';
 var Uint8ArrayReader = require('./uint8ArrayReader');
 
@@ -7739,7 +8486,7 @@ else {
 }
 
 }).call(this,require("buffer").Buffer)
-},{"buffer":6}],55:[function(require,module,exports){
+},{"buffer":9}],55:[function(require,module,exports){
 'use strict';
 var DataReader = require('./dataReader');
 
@@ -8943,7 +9690,7 @@ module.exports.area = function(layer) {
     return geojsonArea(gj.geometry);
 };
 
-},{"geojson-area":20,"spherical":100}],62:[function(require,module,exports){
+},{"geojson-area":22,"spherical":103}],62:[function(require,module,exports){
 (function(window) {
 	var HAS_HASHCHANGE = (function() {
 		var doc_mode = window.documentMode;
@@ -10376,7 +11123,7 @@ if (typeof exports === 'object') {
   return this || (typeof window !== 'undefined' ? window : global);
 }());
 
-}).call(this,typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
+}).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
 },{}],64:[function(require,module,exports){
 var _ = require("./lodash.custom.js");
 var rewind = require("geojson-rewind");
@@ -10973,7 +11720,7 @@ osmtogeojson.toGeojson = osmtogeojson;
 
 module.exports = osmtogeojson;
 
-},{"./lodash.custom.js":65,"./polygon_features.json":66,"geojson-rewind":27}],65:[function(require,module,exports){
+},{"./lodash.custom.js":65,"./polygon_features.json":68,"geojson-rewind":67}],65:[function(require,module,exports){
 (function (global){
 /**
  * @license
@@ -12770,8 +13517,61 @@ module.exports = osmtogeojson;
 
 }.call(this));
 
-}).call(this,typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
+}).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
 },{}],66:[function(require,module,exports){
+arguments[4][30][0].apply(exports,arguments)
+},{"dup":30,"wgs84":144}],67:[function(require,module,exports){
+var geojsonArea = require('geojson-area');
+
+module.exports = rewind;
+
+function rewind(gj, outer) {
+    switch ((gj && gj.type) || null) {
+        case 'FeatureCollection':
+            gj.features = gj.features.map(curryOuter(rewind, outer));
+            return gj;
+        case 'Feature':
+            gj.geometry = rewind(gj.geometry, outer);
+            return gj;
+        case 'Polygon':
+        case 'MultiPolygon':
+            return correct(gj, outer);
+        default:
+            return gj;
+    }
+}
+
+function curryOuter(a, b) {
+    return function(_) { return a(_, b); };
+}
+
+function correct(_, outer) {
+    if (_.type === 'Polygon') {
+        _.coordinates = correctRings(_.coordinates, outer);
+    } else if (_.type === 'MultiPolygon') {
+        _.coordinates = _.coordinates.map(curryOuter(correctRings, outer));
+    }
+    return _;
+}
+
+function correctRings(_, outer) {
+    outer = !!outer;
+    _[0] = wind(_[0], !outer);
+    for (var i = 1; i < _.length; i++) {
+        _[i] = wind(_[i], outer);
+    }
+    return _;
+}
+
+function wind(_, dir) {
+    return cw(_) === dir ? _ : _.reverse();
+}
+
+function cw(_) {
+    return geojsonArea.ring(_) >= 0;
+}
+
+},{"geojson-area":66}],68:[function(require,module,exports){
 module.exports={
     "building": true,
     "highway": {
@@ -12852,7 +13652,7 @@ module.exports={
     "area:highway": true,
     "craft": true
 }
-},{}],67:[function(require,module,exports){
+},{}],69:[function(require,module,exports){
 // Top level file is just a mixin of submodules & constants
 'use strict';
 
@@ -12868,15 +13668,15 @@ assign(pako, deflate, inflate, constants);
 
 module.exports = pako;
 
-},{"./lib/deflate":68,"./lib/inflate":69,"./lib/utils/common":70,"./lib/zlib/constants":73}],68:[function(require,module,exports){
+},{"./lib/deflate":70,"./lib/inflate":71,"./lib/utils/common":72,"./lib/zlib/constants":75}],70:[function(require,module,exports){
 'use strict';
 
 
-var zlib_deflate = require('./zlib/deflate.js');
-var utils = require('./utils/common');
-var strings = require('./utils/strings');
-var msg = require('./zlib/messages');
-var zstream = require('./zlib/zstream');
+var zlib_deflate = require('./zlib/deflate');
+var utils        = require('./utils/common');
+var strings      = require('./utils/strings');
+var msg          = require('./zlib/messages');
+var ZStream      = require('./zlib/zstream');
 
 var toString = Object.prototype.toString;
 
@@ -12950,6 +13750,7 @@ var Z_DEFLATED  = 8;
  * - `windowBits`
  * - `memLevel`
  * - `strategy`
+ * - `dictionary`
  *
  * [http://zlib.net/manual.html#Advanced](http://zlib.net/manual.html#Advanced)
  * for more information on these.
@@ -12987,7 +13788,8 @@ var Z_DEFLATED  = 8;
  * console.log(deflate.result);
  * ```
  **/
-var Deflate = function(options) {
+function Deflate(options) {
+  if (!(this instanceof Deflate)) return new Deflate(options);
 
   this.options = utils.assign({
     level: Z_DEFAULT_COMPRESSION,
@@ -13014,7 +13816,7 @@ var Deflate = function(options) {
   this.ended  = false;  // used to avoid multiple onEnd() calls
   this.chunks = [];     // chunks of compressed data
 
-  this.strm = new zstream();
+  this.strm = new ZStream();
   this.strm.avail_out = 0;
 
   var status = zlib_deflate.deflateInit2(
@@ -13033,7 +13835,28 @@ var Deflate = function(options) {
   if (opt.header) {
     zlib_deflate.deflateSetHeader(this.strm, opt.header);
   }
-};
+
+  if (opt.dictionary) {
+    var dict;
+    // Convert data if needed
+    if (typeof opt.dictionary === 'string') {
+      // If we need to compress text, change encoding to utf8.
+      dict = strings.string2buf(opt.dictionary);
+    } else if (toString.call(opt.dictionary) === '[object ArrayBuffer]') {
+      dict = new Uint8Array(opt.dictionary);
+    } else {
+      dict = opt.dictionary;
+    }
+
+    status = zlib_deflate.deflateSetDictionary(this.strm, dict);
+
+    if (status !== Z_OK) {
+      throw new Error(msg[status]);
+    }
+
+    this._dict_set = true;
+  }
+}
 
 /**
  * Deflate#push(data[, mode]) -> Boolean
@@ -13064,7 +13887,7 @@ var Deflate = function(options) {
  * push(chunk, true);  // push last chunk
  * ```
  **/
-Deflate.prototype.push = function(data, mode) {
+Deflate.prototype.push = function (data, mode) {
   var strm = this.strm;
   var chunkSize = this.options.chunkSize;
   var status, _mode;
@@ -13136,7 +13959,7 @@ Deflate.prototype.push = function(data, mode) {
  * By default, stores data blocks in `chunks[]` property and glue
  * those in `onEnd`. Override this handler, if you need another behaviour.
  **/
-Deflate.prototype.onData = function(chunk) {
+Deflate.prototype.onData = function (chunk) {
   this.chunks.push(chunk);
 };
 
@@ -13151,7 +13974,7 @@ Deflate.prototype.onData = function(chunk) {
  * or if an error happened. By default - join collected chunks,
  * free memory and fill `results` / `err` properties.
  **/
-Deflate.prototype.onEnd = function(status) {
+Deflate.prototype.onEnd = function (status) {
   // On success - join
   if (status === Z_OK) {
     if (this.options.to === 'string') {
@@ -13171,7 +13994,7 @@ Deflate.prototype.onEnd = function(status) {
  * - data (Uint8Array|Array|String): input data to compress.
  * - options (Object): zlib deflate options.
  *
- * Compress `data` with deflate alrorythm and `options`.
+ * Compress `data` with deflate algorithm and `options`.
  *
  * Supported options are:
  *
@@ -13179,6 +14002,7 @@ Deflate.prototype.onEnd = function(status) {
  * - windowBits
  * - memLevel
  * - strategy
+ * - dictionary
  *
  * [http://zlib.net/manual.html#Advanced](http://zlib.net/manual.html#Advanced)
  * for more information on these.
@@ -13246,17 +14070,17 @@ exports.deflate = deflate;
 exports.deflateRaw = deflateRaw;
 exports.gzip = gzip;
 
-},{"./utils/common":70,"./utils/strings":71,"./zlib/deflate.js":75,"./zlib/messages":80,"./zlib/zstream":82}],69:[function(require,module,exports){
+},{"./utils/common":72,"./utils/strings":73,"./zlib/deflate":77,"./zlib/messages":82,"./zlib/zstream":84}],71:[function(require,module,exports){
 'use strict';
 
 
-var zlib_inflate = require('./zlib/inflate.js');
-var utils = require('./utils/common');
-var strings = require('./utils/strings');
-var c = require('./zlib/constants');
-var msg = require('./zlib/messages');
-var zstream = require('./zlib/zstream');
-var gzheader = require('./zlib/gzheader');
+var zlib_inflate = require('./zlib/inflate');
+var utils        = require('./utils/common');
+var strings      = require('./utils/strings');
+var c            = require('./zlib/constants');
+var msg          = require('./zlib/messages');
+var ZStream      = require('./zlib/zstream');
+var GZheader     = require('./zlib/gzheader');
 
 var toString = Object.prototype.toString;
 
@@ -13306,6 +14130,7 @@ var toString = Object.prototype.toString;
  * on bad params. Supported options:
  *
  * - `windowBits`
+ * - `dictionary`
  *
  * [http://zlib.net/manual.html#Advanced](http://zlib.net/manual.html#Advanced)
  * for more information on these.
@@ -13338,7 +14163,8 @@ var toString = Object.prototype.toString;
  * console.log(inflate.result);
  * ```
  **/
-var Inflate = function(options) {
+function Inflate(options) {
+  if (!(this instanceof Inflate)) return new Inflate(options);
 
   this.options = utils.assign({
     chunkSize: 16384,
@@ -13376,7 +14202,7 @@ var Inflate = function(options) {
   this.ended  = false;  // used to avoid multiple onEnd() calls
   this.chunks = [];     // chunks of compressed data
 
-  this.strm   = new zstream();
+  this.strm   = new ZStream();
   this.strm.avail_out = 0;
 
   var status  = zlib_inflate.inflateInit2(
@@ -13388,10 +14214,10 @@ var Inflate = function(options) {
     throw new Error(msg[status]);
   }
 
-  this.header = new gzheader();
+  this.header = new GZheader();
 
   zlib_inflate.inflateGetHeader(this.strm, this.header);
-};
+}
 
 /**
  * Inflate#push(data[, mode]) -> Boolean
@@ -13421,11 +14247,13 @@ var Inflate = function(options) {
  * push(chunk, true);  // push last chunk
  * ```
  **/
-Inflate.prototype.push = function(data, mode) {
+Inflate.prototype.push = function (data, mode) {
   var strm = this.strm;
   var chunkSize = this.options.chunkSize;
+  var dictionary = this.options.dictionary;
   var status, _mode;
   var next_out_utf8, tail, utf8str;
+  var dict;
 
   // Flag to properly process Z_BUF_ERROR on testing inflate call
   // when we check that all output data was flushed.
@@ -13455,6 +14283,20 @@ Inflate.prototype.push = function(data, mode) {
     }
 
     status = zlib_inflate.inflate(strm, c.Z_NO_FLUSH);    /* no bad return value */
+
+    if (status === c.Z_NEED_DICT && dictionary) {
+      // Convert data if needed
+      if (typeof dictionary === 'string') {
+        dict = strings.string2buf(dictionary);
+      } else if (toString.call(dictionary) === '[object ArrayBuffer]') {
+        dict = new Uint8Array(dictionary);
+      } else {
+        dict = dictionary;
+      }
+
+      status = zlib_inflate.inflateSetDictionary(this.strm, dict);
+
+    }
 
     if (status === c.Z_BUF_ERROR && allowBufError === true) {
       status = c.Z_OK;
@@ -13535,7 +14377,7 @@ Inflate.prototype.push = function(data, mode) {
  * By default, stores data blocks in `chunks[]` property and glue
  * those in `onEnd`. Override this handler, if you need another behaviour.
  **/
-Inflate.prototype.onData = function(chunk) {
+Inflate.prototype.onData = function (chunk) {
   this.chunks.push(chunk);
 };
 
@@ -13550,7 +14392,7 @@ Inflate.prototype.onData = function(chunk) {
  * or if an error happened. By default - join collected chunks,
  * free memory and fill `results` / `err` properties.
  **/
-Inflate.prototype.onEnd = function(status) {
+Inflate.prototype.onEnd = function (status) {
   // On success - join
   if (status === c.Z_OK) {
     if (this.options.to === 'string') {
@@ -13648,7 +14490,7 @@ exports.inflate = inflate;
 exports.inflateRaw = inflateRaw;
 exports.ungzip  = inflate;
 
-},{"./utils/common":70,"./utils/strings":71,"./zlib/constants":73,"./zlib/gzheader":76,"./zlib/inflate.js":78,"./zlib/messages":80,"./zlib/zstream":82}],70:[function(require,module,exports){
+},{"./utils/common":72,"./utils/strings":73,"./zlib/constants":75,"./zlib/gzheader":78,"./zlib/inflate":80,"./zlib/messages":82,"./zlib/zstream":84}],72:[function(require,module,exports){
 'use strict';
 
 
@@ -13690,28 +14532,28 @@ exports.shrinkBuf = function (buf, size) {
 var fnTyped = {
   arraySet: function (dest, src, src_offs, len, dest_offs) {
     if (src.subarray && dest.subarray) {
-      dest.set(src.subarray(src_offs, src_offs+len), dest_offs);
+      dest.set(src.subarray(src_offs, src_offs + len), dest_offs);
       return;
     }
     // Fallback to ordinary array
-    for (var i=0; i<len; i++) {
+    for (var i = 0; i < len; i++) {
       dest[dest_offs + i] = src[src_offs + i];
     }
   },
   // Join array of chunks to single array.
-  flattenChunks: function(chunks) {
+  flattenChunks: function (chunks) {
     var i, l, len, pos, chunk, result;
 
     // calculate data length
     len = 0;
-    for (i=0, l=chunks.length; i<l; i++) {
+    for (i = 0, l = chunks.length; i < l; i++) {
       len += chunks[i].length;
     }
 
     // join chunks
     result = new Uint8Array(len);
     pos = 0;
-    for (i=0, l=chunks.length; i<l; i++) {
+    for (i = 0, l = chunks.length; i < l; i++) {
       chunk = chunks[i];
       result.set(chunk, pos);
       pos += chunk.length;
@@ -13723,12 +14565,12 @@ var fnTyped = {
 
 var fnUntyped = {
   arraySet: function (dest, src, src_offs, len, dest_offs) {
-    for (var i=0; i<len; i++) {
+    for (var i = 0; i < len; i++) {
       dest[dest_offs + i] = src[src_offs + i];
     }
   },
   // Join array of chunks to single array.
-  flattenChunks: function(chunks) {
+  flattenChunks: function (chunks) {
     return [].concat.apply([], chunks);
   }
 };
@@ -13752,7 +14594,7 @@ exports.setTyped = function (on) {
 
 exports.setTyped(TYPED_OK);
 
-},{}],71:[function(require,module,exports){
+},{}],73:[function(require,module,exports){
 // String encode/decode helpers
 'use strict';
 
@@ -13768,18 +14610,18 @@ var utils = require('./common');
 var STR_APPLY_OK = true;
 var STR_APPLY_UIA_OK = true;
 
-try { String.fromCharCode.apply(null, [0]); } catch(__) { STR_APPLY_OK = false; }
-try { String.fromCharCode.apply(null, new Uint8Array(1)); } catch(__) { STR_APPLY_UIA_OK = false; }
+try { String.fromCharCode.apply(null, [ 0 ]); } catch (__) { STR_APPLY_OK = false; }
+try { String.fromCharCode.apply(null, new Uint8Array(1)); } catch (__) { STR_APPLY_UIA_OK = false; }
 
 
 // Table with utf8 lengths (calculated by first byte of sequence)
 // Note, that 5 & 6-byte values and some 4-byte values can not be represented in JS,
 // because max possible codepoint is 0x10ffff
 var _utf8len = new utils.Buf8(256);
-for (var q=0; q<256; q++) {
+for (var q = 0; q < 256; q++) {
   _utf8len[q] = (q >= 252 ? 6 : q >= 248 ? 5 : q >= 240 ? 4 : q >= 224 ? 3 : q >= 192 ? 2 : 1);
 }
-_utf8len[254]=_utf8len[254]=1; // Invalid sequence start
+_utf8len[254] = _utf8len[254] = 1; // Invalid sequence start
 
 
 // convert string to array (typed, when possible)
@@ -13789,8 +14631,8 @@ exports.string2buf = function (str) {
   // count binary size
   for (m_pos = 0; m_pos < str_len; m_pos++) {
     c = str.charCodeAt(m_pos);
-    if ((c & 0xfc00) === 0xd800 && (m_pos+1 < str_len)) {
-      c2 = str.charCodeAt(m_pos+1);
+    if ((c & 0xfc00) === 0xd800 && (m_pos + 1 < str_len)) {
+      c2 = str.charCodeAt(m_pos + 1);
       if ((c2 & 0xfc00) === 0xdc00) {
         c = 0x10000 + ((c - 0xd800) << 10) + (c2 - 0xdc00);
         m_pos++;
@@ -13803,10 +14645,10 @@ exports.string2buf = function (str) {
   buf = new utils.Buf8(buf_len);
 
   // convert
-  for (i=0, m_pos = 0; i < buf_len; m_pos++) {
+  for (i = 0, m_pos = 0; i < buf_len; m_pos++) {
     c = str.charCodeAt(m_pos);
-    if ((c & 0xfc00) === 0xd800 && (m_pos+1 < str_len)) {
-      c2 = str.charCodeAt(m_pos+1);
+    if ((c & 0xfc00) === 0xd800 && (m_pos + 1 < str_len)) {
+      c2 = str.charCodeAt(m_pos + 1);
       if ((c2 & 0xfc00) === 0xdc00) {
         c = 0x10000 + ((c - 0xd800) << 10) + (c2 - 0xdc00);
         m_pos++;
@@ -13846,7 +14688,7 @@ function buf2binstring(buf, len) {
   }
 
   var result = '';
-  for (var i=0; i < len; i++) {
+  for (var i = 0; i < len; i++) {
     result += String.fromCharCode(buf[i]);
   }
   return result;
@@ -13854,15 +14696,15 @@ function buf2binstring(buf, len) {
 
 
 // Convert byte array to binary string
-exports.buf2binstring = function(buf) {
+exports.buf2binstring = function (buf) {
   return buf2binstring(buf, buf.length);
 };
 
 
 // Convert binary string (typed, when possible)
-exports.binstring2buf = function(str) {
+exports.binstring2buf = function (str) {
   var buf = new utils.Buf8(str.length);
-  for (var i=0, len=buf.length; i < len; i++) {
+  for (var i = 0, len = buf.length; i < len; i++) {
     buf[i] = str.charCodeAt(i);
   }
   return buf;
@@ -13877,16 +14719,16 @@ exports.buf2string = function (buf, max) {
   // Reserve max possible length (2 words per char)
   // NB: by unknown reasons, Array is significantly faster for
   //     String.fromCharCode.apply than Uint16Array.
-  var utf16buf = new Array(len*2);
+  var utf16buf = new Array(len * 2);
 
-  for (out=0, i=0; i<len;) {
+  for (out = 0, i = 0; i < len;) {
     c = buf[i++];
     // quick process ascii
     if (c < 0x80) { utf16buf[out++] = c; continue; }
 
     c_len = _utf8len[c];
     // skip 5 & 6 byte codes
-    if (c_len > 4) { utf16buf[out++] = 0xfffd; i += c_len-1; continue; }
+    if (c_len > 4) { utf16buf[out++] = 0xfffd; i += c_len - 1; continue; }
 
     // apply mask on first byte
     c &= c_len === 2 ? 0x1f : c_len === 3 ? 0x0f : 0x07;
@@ -13918,14 +14760,14 @@ exports.buf2string = function (buf, max) {
 //
 // buf[] - utf8 bytes array
 // max   - length limit (mandatory);
-exports.utf8border = function(buf, max) {
+exports.utf8border = function (buf, max) {
   var pos;
 
   max = max || buf.length;
   if (max > buf.length) { max = buf.length; }
 
   // go back from last position, until start of sequence found
-  pos = max-1;
+  pos = max - 1;
   while (pos >= 0 && (buf[pos] & 0xC0) === 0x80) { pos--; }
 
   // Fuckup - very small and broken sequence,
@@ -13939,7 +14781,7 @@ exports.utf8border = function(buf, max) {
   return (pos + _utf8len[buf[pos]] > max) ? pos : max;
 };
 
-},{"./common":70}],72:[function(require,module,exports){
+},{"./common":72}],74:[function(require,module,exports){
 'use strict';
 
 // Note: adler32 takes 12% for level 0 and 2% for level 6.
@@ -13973,7 +14815,10 @@ function adler32(adler, buf, len, pos) {
 
 module.exports = adler32;
 
-},{}],73:[function(require,module,exports){
+},{}],75:[function(require,module,exports){
+'use strict';
+
+
 module.exports = {
 
   /* Allowed flush values; see deflate() and inflate() below for details */
@@ -14022,7 +14867,7 @@ module.exports = {
   //Z_NULL:                 null // Use -1 or null inline, depending on var type
 };
 
-},{}],74:[function(require,module,exports){
+},{}],76:[function(require,module,exports){
 'use strict';
 
 // Note: we can't get significant speed boost here.
@@ -14034,10 +14879,10 @@ module.exports = {
 function makeTable() {
   var c, table = [];
 
-  for (var n =0; n < 256; n++) {
+  for (var n = 0; n < 256; n++) {
     c = n;
-    for (var k =0; k < 8; k++) {
-      c = ((c&1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1));
+    for (var k = 0; k < 8; k++) {
+      c = ((c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1));
     }
     table[n] = c;
   }
@@ -14053,7 +14898,7 @@ function crc32(crc, buf, len, pos) {
   var t = crcTable,
       end = pos + len;
 
-  crc = crc ^ (-1);
+  crc ^= -1;
 
   for (var i = pos; i < end; i++) {
     crc = (crc >>> 8) ^ t[(crc ^ buf[i]) & 0xFF];
@@ -14065,14 +14910,14 @@ function crc32(crc, buf, len, pos) {
 
 module.exports = crc32;
 
-},{}],75:[function(require,module,exports){
+},{}],77:[function(require,module,exports){
 'use strict';
 
 var utils   = require('../utils/common');
 var trees   = require('./trees');
 var adler32 = require('./adler32');
 var crc32   = require('./crc32');
-var msg   = require('./messages');
+var msg     = require('./messages');
 
 /* Public constants ==========================================================*/
 /* ===========================================================================*/
@@ -14145,7 +14990,7 @@ var D_CODES       = 30;
 /* number of distance codes */
 var BL_CODES      = 19;
 /* number of codes used to transfer the bit lengths */
-var HEAP_SIZE     = 2*L_CODES + 1;
+var HEAP_SIZE     = 2 * L_CODES + 1;
 /* maximum heap size */
 var MAX_BITS  = 15;
 /* All codes must not exceed MAX_BITS bits */
@@ -14211,7 +15056,7 @@ function flush_pending(strm) {
 }
 
 
-function flush_block_only (s, last) {
+function flush_block_only(s, last) {
   trees._tr_flush_block(s, (s.block_start >= 0 ? s.block_start : -1), s.strstart - s.block_start, last);
   s.block_start = s.strstart;
   flush_pending(s.strm);
@@ -14251,6 +15096,7 @@ function read_buf(strm, buf, start, size) {
 
   strm.avail_in -= len;
 
+  // zmemcpy(buf, strm->next_in, len);
   utils.arraySet(buf, strm.input, strm.next_in, len, start);
   if (strm.state.wrap === 1) {
     strm.adler = adler32(strm.adler, buf, len, start);
@@ -14481,7 +15327,7 @@ function fill_window(s) {
 //#endif
       while (s.insert) {
         /* UPDATE_HASH(s, s->ins_h, s->window[str + MIN_MATCH-1]); */
-        s.ins_h = ((s.ins_h << s.hash_shift) ^ s.window[str + MIN_MATCH-1]) & s.hash_mask;
+        s.ins_h = ((s.ins_h << s.hash_shift) ^ s.window[str + MIN_MATCH - 1]) & s.hash_mask;
 
         s.prev[str & s.w_mask] = s.head[s.ins_h];
         s.head[s.ins_h] = str;
@@ -14745,7 +15591,7 @@ function deflate_fast(s, flush) {
       /***/
     }
   }
-  s.insert = ((s.strstart < (MIN_MATCH-1)) ? s.strstart : MIN_MATCH-1);
+  s.insert = ((s.strstart < (MIN_MATCH - 1)) ? s.strstart : MIN_MATCH - 1);
   if (flush === Z_FINISH) {
     /*** FLUSH_BLOCK(s, 1); ***/
     flush_block_only(s, true);
@@ -14808,10 +15654,10 @@ function deflate_slow(s, flush) {
      */
     s.prev_length = s.match_length;
     s.prev_match = s.match_start;
-    s.match_length = MIN_MATCH-1;
+    s.match_length = MIN_MATCH - 1;
 
     if (hash_head !== 0/*NIL*/ && s.prev_length < s.max_lazy_match &&
-        s.strstart - hash_head <= (s.w_size-MIN_LOOKAHEAD)/*MAX_DIST(s)*/) {
+        s.strstart - hash_head <= (s.w_size - MIN_LOOKAHEAD)/*MAX_DIST(s)*/) {
       /* To simplify the code, we prevent matches with the string
        * of window index 0 (in particular we have to avoid a match
        * of the string with itself at the start of the input file).
@@ -14825,7 +15671,7 @@ function deflate_slow(s, flush) {
         /* If prev_match is also MIN_MATCH, match_start is garbage
          * but we will ignore the current match anyway.
          */
-        s.match_length = MIN_MATCH-1;
+        s.match_length = MIN_MATCH - 1;
       }
     }
     /* If there was a match at the previous step and the current
@@ -14839,13 +15685,13 @@ function deflate_slow(s, flush) {
 
       /***_tr_tally_dist(s, s.strstart - 1 - s.prev_match,
                      s.prev_length - MIN_MATCH, bflush);***/
-      bflush = trees._tr_tally(s, s.strstart - 1- s.prev_match, s.prev_length - MIN_MATCH);
+      bflush = trees._tr_tally(s, s.strstart - 1 - s.prev_match, s.prev_length - MIN_MATCH);
       /* Insert in hash table all strings up to the end of the match.
        * strstart-1 and strstart are already inserted. If there is not
        * enough lookahead, the last two strings are not inserted in
        * the hash table.
        */
-      s.lookahead -= s.prev_length-1;
+      s.lookahead -= s.prev_length - 1;
       s.prev_length -= 2;
       do {
         if (++s.strstart <= max_insert) {
@@ -14857,7 +15703,7 @@ function deflate_slow(s, flush) {
         }
       } while (--s.prev_length !== 0);
       s.match_available = 0;
-      s.match_length = MIN_MATCH-1;
+      s.match_length = MIN_MATCH - 1;
       s.strstart++;
 
       if (bflush) {
@@ -14876,7 +15722,7 @@ function deflate_slow(s, flush) {
        */
       //Tracevv((stderr,"%c", s->window[s->strstart-1]));
       /*** _tr_tally_lit(s, s.window[s.strstart-1], bflush); ***/
-      bflush = trees._tr_tally(s, 0, s.window[s.strstart-1]);
+      bflush = trees._tr_tally(s, 0, s.window[s.strstart - 1]);
 
       if (bflush) {
         /*** FLUSH_BLOCK_ONLY(s, 0) ***/
@@ -14901,11 +15747,11 @@ function deflate_slow(s, flush) {
   if (s.match_available) {
     //Tracevv((stderr,"%c", s->window[s->strstart-1]));
     /*** _tr_tally_lit(s, s.window[s.strstart-1], bflush); ***/
-    bflush = trees._tr_tally(s, 0, s.window[s.strstart-1]);
+    bflush = trees._tr_tally(s, 0, s.window[s.strstart - 1]);
 
     s.match_available = 0;
   }
-  s.insert = s.strstart < MIN_MATCH-1 ? s.strstart : MIN_MATCH-1;
+  s.insert = s.strstart < MIN_MATCH - 1 ? s.strstart : MIN_MATCH - 1;
   if (flush === Z_FINISH) {
     /*** FLUSH_BLOCK(s, 1); ***/
     flush_block_only(s, true);
@@ -15085,13 +15931,13 @@ function deflate_huff(s, flush) {
  * exclude worst case performance for pathological files. Better values may be
  * found for specific files.
  */
-var Config = function (good_length, max_lazy, nice_length, max_chain, func) {
+function Config(good_length, max_lazy, nice_length, max_chain, func) {
   this.good_length = good_length;
   this.max_lazy = max_lazy;
   this.nice_length = nice_length;
   this.max_chain = max_chain;
   this.func = func;
-};
+}
 
 var configuration_table;
 
@@ -15241,8 +16087,8 @@ function DeflateState() {
   // Use flat array of DOUBLE size, with interleaved fata,
   // because JS does not support effective
   this.dyn_ltree  = new utils.Buf16(HEAP_SIZE * 2);
-  this.dyn_dtree  = new utils.Buf16((2*D_CODES+1) * 2);
-  this.bl_tree    = new utils.Buf16((2*BL_CODES+1) * 2);
+  this.dyn_dtree  = new utils.Buf16((2 * D_CODES + 1) * 2);
+  this.bl_tree    = new utils.Buf16((2 * BL_CODES + 1) * 2);
   zero(this.dyn_ltree);
   zero(this.dyn_dtree);
   zero(this.bl_tree);
@@ -15252,11 +16098,11 @@ function DeflateState() {
   this.bl_desc  = null;         /* desc. for bit length tree */
 
   //ush bl_count[MAX_BITS+1];
-  this.bl_count = new utils.Buf16(MAX_BITS+1);
+  this.bl_count = new utils.Buf16(MAX_BITS + 1);
   /* number of codes at each bit length for an optimal tree */
 
   //int heap[2*L_CODES+1];      /* heap used to build the Huffman trees */
-  this.heap = new utils.Buf16(2*L_CODES+1);  /* heap used to build the Huffman trees */
+  this.heap = new utils.Buf16(2 * L_CODES + 1);  /* heap used to build the Huffman trees */
   zero(this.heap);
 
   this.heap_len = 0;               /* number of elements in the heap */
@@ -15265,7 +16111,7 @@ function DeflateState() {
    * The same heap array is used to build all trees.
    */
 
-  this.depth = new utils.Buf16(2*L_CODES+1); //uch depth[2*L_CODES+1];
+  this.depth = new utils.Buf16(2 * L_CODES + 1); //uch depth[2*L_CODES+1];
   zero(this.depth);
   /* Depth of each subtree used as tie breaker for trees of equal frequency
    */
@@ -15431,9 +16277,16 @@ function deflateInit2(strm, level, method, windowBits, memLevel, strategy) {
   s.lit_bufsize = 1 << (memLevel + 6); /* 16K elements by default */
 
   s.pending_buf_size = s.lit_bufsize * 4;
+
+  //overlay = (ushf *) ZALLOC(strm, s->lit_bufsize, sizeof(ush)+2);
+  //s->pending_buf = (uchf *) overlay;
   s.pending_buf = new utils.Buf8(s.pending_buf_size);
 
-  s.d_buf = s.lit_bufsize >> 1;
+  // It is offset from `s.pending_buf` (size is `s.lit_bufsize * 2`)
+  //s->d_buf = overlay + s->lit_bufsize/sizeof(ush);
+  s.d_buf = 1 * s.lit_bufsize;
+
+  //s->l_buf = s->pending_buf + (1+sizeof(ush))*s->lit_bufsize;
   s.l_buf = (1 + 2) * s.lit_bufsize;
 
   s.level = level;
@@ -15806,12 +16659,94 @@ function deflateEnd(strm) {
   return status === BUSY_STATE ? err(strm, Z_DATA_ERROR) : Z_OK;
 }
 
+
 /* =========================================================================
- * Copy the source state to the destination state
+ * Initializes the compression dictionary from the given byte
+ * sequence without producing any compressed output.
  */
-//function deflateCopy(dest, source) {
-//
-//}
+function deflateSetDictionary(strm, dictionary) {
+  var dictLength = dictionary.length;
+
+  var s;
+  var str, n;
+  var wrap;
+  var avail;
+  var next;
+  var input;
+  var tmpDict;
+
+  if (!strm/*== Z_NULL*/ || !strm.state/*== Z_NULL*/) {
+    return Z_STREAM_ERROR;
+  }
+
+  s = strm.state;
+  wrap = s.wrap;
+
+  if (wrap === 2 || (wrap === 1 && s.status !== INIT_STATE) || s.lookahead) {
+    return Z_STREAM_ERROR;
+  }
+
+  /* when using zlib wrappers, compute Adler-32 for provided dictionary */
+  if (wrap === 1) {
+    /* adler32(strm->adler, dictionary, dictLength); */
+    strm.adler = adler32(strm.adler, dictionary, dictLength, 0);
+  }
+
+  s.wrap = 0;   /* avoid computing Adler-32 in read_buf */
+
+  /* if dictionary would fill window, just replace the history */
+  if (dictLength >= s.w_size) {
+    if (wrap === 0) {            /* already empty otherwise */
+      /*** CLEAR_HASH(s); ***/
+      zero(s.head); // Fill with NIL (= 0);
+      s.strstart = 0;
+      s.block_start = 0;
+      s.insert = 0;
+    }
+    /* use the tail */
+    // dictionary = dictionary.slice(dictLength - s.w_size);
+    tmpDict = new utils.Buf8(s.w_size);
+    utils.arraySet(tmpDict, dictionary, dictLength - s.w_size, s.w_size, 0);
+    dictionary = tmpDict;
+    dictLength = s.w_size;
+  }
+  /* insert dictionary into window and hash */
+  avail = strm.avail_in;
+  next = strm.next_in;
+  input = strm.input;
+  strm.avail_in = dictLength;
+  strm.next_in = 0;
+  strm.input = dictionary;
+  fill_window(s);
+  while (s.lookahead >= MIN_MATCH) {
+    str = s.strstart;
+    n = s.lookahead - (MIN_MATCH - 1);
+    do {
+      /* UPDATE_HASH(s, s->ins_h, s->window[str + MIN_MATCH-1]); */
+      s.ins_h = ((s.ins_h << s.hash_shift) ^ s.window[str + MIN_MATCH - 1]) & s.hash_mask;
+
+      s.prev[str & s.w_mask] = s.head[s.ins_h];
+
+      s.head[s.ins_h] = str;
+      str++;
+    } while (--n);
+    s.strstart = str;
+    s.lookahead = MIN_MATCH - 1;
+    fill_window(s);
+  }
+  s.strstart += s.lookahead;
+  s.block_start = s.strstart;
+  s.insert = s.lookahead;
+  s.lookahead = 0;
+  s.match_length = s.prev_length = MIN_MATCH - 1;
+  s.match_available = 0;
+  strm.next_in = next;
+  strm.input = input;
+  strm.avail_in = avail;
+  s.wrap = wrap;
+  return Z_OK;
+}
+
 
 exports.deflateInit = deflateInit;
 exports.deflateInit2 = deflateInit2;
@@ -15820,19 +16755,19 @@ exports.deflateResetKeep = deflateResetKeep;
 exports.deflateSetHeader = deflateSetHeader;
 exports.deflate = deflate;
 exports.deflateEnd = deflateEnd;
+exports.deflateSetDictionary = deflateSetDictionary;
 exports.deflateInfo = 'pako deflate (from Nodeca project)';
 
 /* Not implemented
 exports.deflateBound = deflateBound;
 exports.deflateCopy = deflateCopy;
-exports.deflateSetDictionary = deflateSetDictionary;
 exports.deflateParams = deflateParams;
 exports.deflatePending = deflatePending;
 exports.deflatePrime = deflatePrime;
 exports.deflateTune = deflateTune;
 */
 
-},{"../utils/common":70,"./adler32":72,"./crc32":74,"./messages":80,"./trees":81}],76:[function(require,module,exports){
+},{"../utils/common":72,"./adler32":74,"./crc32":76,"./messages":82,"./trees":83}],78:[function(require,module,exports){
 'use strict';
 
 
@@ -15874,7 +16809,7 @@ function GZheader() {
 
 module.exports = GZheader;
 
-},{}],77:[function(require,module,exports){
+},{}],79:[function(require,module,exports){
 'use strict';
 
 // See state defs from inflate.js
@@ -16202,14 +17137,14 @@ module.exports = function inflate_fast(strm, start) {
   return;
 };
 
-},{}],78:[function(require,module,exports){
+},{}],80:[function(require,module,exports){
 'use strict';
 
 
-var utils = require('../utils/common');
-var adler32 = require('./adler32');
-var crc32   = require('./crc32');
-var inflate_fast = require('./inffast');
+var utils         = require('../utils/common');
+var adler32       = require('./adler32');
+var crc32         = require('./crc32');
+var inflate_fast  = require('./inffast');
 var inflate_table = require('./inftrees');
 
 var CODES = 0;
@@ -16297,7 +17232,7 @@ var MAX_WBITS = 15;
 var DEF_WBITS = MAX_WBITS;
 
 
-function ZSWAP32(q) {
+function zswap32(q) {
   return  (((q >>> 24) & 0xff) +
           ((q >>> 8) & 0xff00) +
           ((q & 0xff00) << 8) +
@@ -16490,13 +17425,13 @@ function fixedtables(state) {
     while (sym < 280) { state.lens[sym++] = 7; }
     while (sym < 288) { state.lens[sym++] = 8; }
 
-    inflate_table(LENS,  state.lens, 0, 288, lenfix,   0, state.work, {bits: 9});
+    inflate_table(LENS,  state.lens, 0, 288, lenfix,   0, state.work, { bits: 9 });
 
     /* distance table */
     sym = 0;
     while (sym < 32) { state.lens[sym++] = 5; }
 
-    inflate_table(DISTS, state.lens, 0, 32,   distfix, 0, state.work, {bits: 5});
+    inflate_table(DISTS, state.lens, 0, 32,   distfix, 0, state.work, { bits: 5 });
 
     /* do this just once */
     virgin = false;
@@ -16538,7 +17473,7 @@ function updatewindow(strm, src, end, copy) {
 
   /* copy state->wsize or less output bytes into the circular window */
   if (copy >= state.wsize) {
-    utils.arraySet(state.window,src, end - state.wsize, state.wsize, 0);
+    utils.arraySet(state.window, src, end - state.wsize, state.wsize, 0);
     state.wnext = 0;
     state.whave = state.wsize;
   }
@@ -16548,11 +17483,11 @@ function updatewindow(strm, src, end, copy) {
       dist = copy;
     }
     //zmemcpy(state->window + state->wnext, end - copy, dist);
-    utils.arraySet(state.window,src, end - copy, dist, state.wnext);
+    utils.arraySet(state.window, src, end - copy, dist, state.wnext);
     copy -= dist;
     if (copy) {
       //zmemcpy(state->window, end - copy, copy);
-      utils.arraySet(state.window,src, end - copy, copy, 0);
+      utils.arraySet(state.window, src, end - copy, copy, 0);
       state.wnext = copy;
       state.whave = state.wsize;
     }
@@ -16589,7 +17524,7 @@ function inflate(strm, flush) {
   var n; // temporary var for NEED_BITS
 
   var order = /* permutation of code lengths */
-    [16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15];
+    [ 16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15 ];
 
 
   if (!strm || !strm.state || !strm.output ||
@@ -16916,7 +17851,7 @@ function inflate(strm, flush) {
         state.head.hcrc = ((state.flags >> 9) & 1);
         state.head.done = true;
       }
-      strm.adler = state.check = 0 /*crc32(0L, Z_NULL, 0)*/;
+      strm.adler = state.check = 0;
       state.mode = TYPE;
       break;
     case DICTID:
@@ -16928,7 +17863,7 @@ function inflate(strm, flush) {
         bits += 8;
       }
       //===//
-      strm.adler = state.check = ZSWAP32(hold);
+      strm.adler = state.check = zswap32(hold);
       //=== INITBITS();
       hold = 0;
       bits = 0;
@@ -17120,7 +18055,7 @@ function inflate(strm, flush) {
       state.lencode = state.lendyn;
       state.lenbits = 7;
 
-      opts = {bits: state.lenbits};
+      opts = { bits: state.lenbits };
       ret = inflate_table(CODES, state.lens, 0, 19, state.lencode, 0, state.work, opts);
       state.lenbits = opts.bits;
 
@@ -17251,7 +18186,7 @@ function inflate(strm, flush) {
          concerning the ENOUGH constants, which depend on those values */
       state.lenbits = 9;
 
-      opts = {bits: state.lenbits};
+      opts = { bits: state.lenbits };
       ret = inflate_table(LENS, state.lens, 0, state.nlen, state.lencode, 0, state.work, opts);
       // We have separate tables & no pointers. 2 commented lines below not needed.
       // state.next_index = opts.table_index;
@@ -17268,7 +18203,7 @@ function inflate(strm, flush) {
       //state.distcode.copy(state.codes);
       // Switch to use dynamic table
       state.distcode = state.distdyn;
-      opts = {bits: state.distbits};
+      opts = { bits: state.distbits };
       ret = inflate_table(DISTS, state.lens, state.nlen, state.ndist, state.distcode, 0, state.work, opts);
       // We have separate tables & no pointers. 2 commented lines below not needed.
       // state.next_index = opts.table_index;
@@ -17316,7 +18251,7 @@ function inflate(strm, flush) {
       }
       state.back = 0;
       for (;;) {
-        here = state.lencode[hold & ((1 << state.lenbits) -1)];  /*BITS(state.lenbits)*/
+        here = state.lencode[hold & ((1 << state.lenbits) - 1)];  /*BITS(state.lenbits)*/
         here_bits = here >>> 24;
         here_op = (here >>> 16) & 0xff;
         here_val = here & 0xffff;
@@ -17335,7 +18270,7 @@ function inflate(strm, flush) {
         last_val = here_val;
         for (;;) {
           here = state.lencode[last_val +
-                  ((hold & ((1 << (last_bits + last_op)) -1))/*BITS(last.bits + last.op)*/ >> last_bits)];
+                  ((hold & ((1 << (last_bits + last_op)) - 1))/*BITS(last.bits + last.op)*/ >> last_bits)];
           here_bits = here >>> 24;
           here_op = (here >>> 16) & 0xff;
           here_val = here & 0xffff;
@@ -17392,7 +18327,7 @@ function inflate(strm, flush) {
           bits += 8;
         }
         //===//
-        state.length += hold & ((1 << state.extra) -1)/*BITS(state.extra)*/;
+        state.length += hold & ((1 << state.extra) - 1)/*BITS(state.extra)*/;
         //--- DROPBITS(state.extra) ---//
         hold >>>= state.extra;
         bits -= state.extra;
@@ -17405,7 +18340,7 @@ function inflate(strm, flush) {
       /* falls through */
     case DIST:
       for (;;) {
-        here = state.distcode[hold & ((1 << state.distbits) -1)];/*BITS(state.distbits)*/
+        here = state.distcode[hold & ((1 << state.distbits) - 1)];/*BITS(state.distbits)*/
         here_bits = here >>> 24;
         here_op = (here >>> 16) & 0xff;
         here_val = here & 0xffff;
@@ -17424,7 +18359,7 @@ function inflate(strm, flush) {
         last_val = here_val;
         for (;;) {
           here = state.distcode[last_val +
-                  ((hold & ((1 << (last_bits + last_op)) -1))/*BITS(last.bits + last.op)*/ >> last_bits)];
+                  ((hold & ((1 << (last_bits + last_op)) - 1))/*BITS(last.bits + last.op)*/ >> last_bits)];
           here_bits = here >>> 24;
           here_op = (here >>> 16) & 0xff;
           here_val = here & 0xffff;
@@ -17468,7 +18403,7 @@ function inflate(strm, flush) {
           bits += 8;
         }
         //===//
-        state.offset += hold & ((1 << state.extra) -1)/*BITS(state.extra)*/;
+        state.offset += hold & ((1 << state.extra) - 1)/*BITS(state.extra)*/;
         //--- DROPBITS(state.extra) ---//
         hold >>>= state.extra;
         bits -= state.extra;
@@ -17562,8 +18497,8 @@ function inflate(strm, flush) {
 
         }
         _out = left;
-        // NB: crc32 stored as signed 32-bit int, ZSWAP32 returns signed too
-        if ((state.flags ? hold : ZSWAP32(hold)) !== state.check) {
+        // NB: crc32 stored as signed 32-bit int, zswap32 returns signed too
+        if ((state.flags ? hold : zswap32(hold)) !== state.check) {
           strm.msg = 'incorrect data check';
           state.mode = BAD;
           break;
@@ -17685,6 +18620,41 @@ function inflateGetHeader(strm, head) {
   return Z_OK;
 }
 
+function inflateSetDictionary(strm, dictionary) {
+  var dictLength = dictionary.length;
+
+  var state;
+  var dictid;
+  var ret;
+
+  /* check state */
+  if (!strm /* == Z_NULL */ || !strm.state /* == Z_NULL */) { return Z_STREAM_ERROR; }
+  state = strm.state;
+
+  if (state.wrap !== 0 && state.mode !== DICT) {
+    return Z_STREAM_ERROR;
+  }
+
+  /* check for correct dictionary identifier */
+  if (state.mode === DICT) {
+    dictid = 1; /* adler32(0, null, 0)*/
+    /* dictid = adler32(dictid, dictionary, dictLength); */
+    dictid = adler32(dictid, dictionary, dictLength, 0);
+    if (dictid !== state.check) {
+      return Z_DATA_ERROR;
+    }
+  }
+  /* copy dictionary to window using updatewindow(), which will amend the
+   existing dictionary if appropriate */
+  ret = updatewindow(strm, dictionary, dictLength, dictLength);
+  if (ret) {
+    state.mode = MEM;
+    return Z_MEM_ERROR;
+  }
+  state.havedict = 1;
+  // Tracev((stderr, "inflate:   dictionary set\n"));
+  return Z_OK;
+}
 
 exports.inflateReset = inflateReset;
 exports.inflateReset2 = inflateReset2;
@@ -17694,6 +18664,7 @@ exports.inflateInit2 = inflateInit2;
 exports.inflate = inflate;
 exports.inflateEnd = inflateEnd;
 exports.inflateGetHeader = inflateGetHeader;
+exports.inflateSetDictionary = inflateSetDictionary;
 exports.inflateInfo = 'pako inflate (from Nodeca project)';
 
 /* Not implemented
@@ -17701,13 +18672,12 @@ exports.inflateCopy = inflateCopy;
 exports.inflateGetDictionary = inflateGetDictionary;
 exports.inflateMark = inflateMark;
 exports.inflatePrime = inflatePrime;
-exports.inflateSetDictionary = inflateSetDictionary;
 exports.inflateSync = inflateSync;
 exports.inflateSyncPoint = inflateSyncPoint;
 exports.inflateUndermine = inflateUndermine;
 */
 
-},{"../utils/common":70,"./adler32":72,"./crc32":74,"./inffast":77,"./inftrees":79}],79:[function(require,module,exports){
+},{"../utils/common":72,"./adler32":74,"./crc32":76,"./inffast":79,"./inftrees":81}],81:[function(require,module,exports){
 'use strict';
 
 
@@ -17767,8 +18737,8 @@ module.exports = function inflate_table(type, lens, lens_index, codes, table, ta
   var base_index = 0;
 //  var shoextra;    /* extra bits table to use */
   var end;                    /* use base and extra for symbol > end */
-  var count = new utils.Buf16(MAXBITS+1); //[MAXBITS+1];    /* number of codes of each length */
-  var offs = new utils.Buf16(MAXBITS+1); //[MAXBITS+1];     /* offsets in table for each length */
+  var count = new utils.Buf16(MAXBITS + 1); //[MAXBITS+1];    /* number of codes of each length */
+  var offs = new utils.Buf16(MAXBITS + 1); //[MAXBITS+1];     /* offsets in table for each length */
   var extra = null;
   var extra_index = 0;
 
@@ -17937,7 +18907,7 @@ module.exports = function inflate_table(type, lens, lens_index, codes, table, ta
     return 1;
   }
 
-  var i=0;
+  var i = 0;
   /* process all codes and make table entries */
   for (;;) {
     i++;
@@ -18036,13 +19006,13 @@ module.exports = function inflate_table(type, lens, lens_index, codes, table, ta
   return 0;
 };
 
-},{"../utils/common":70}],80:[function(require,module,exports){
+},{"../utils/common":72}],82:[function(require,module,exports){
 'use strict';
 
 module.exports = {
-  '2':    'need dictionary',     /* Z_NEED_DICT       2  */
-  '1':    'stream end',          /* Z_STREAM_END      1  */
-  '0':    '',                    /* Z_OK              0  */
+  2:      'need dictionary',     /* Z_NEED_DICT       2  */
+  1:      'stream end',          /* Z_STREAM_END      1  */
+  0:      '',                    /* Z_OK              0  */
   '-1':   'file error',          /* Z_ERRNO         (-1) */
   '-2':   'stream error',        /* Z_STREAM_ERROR  (-2) */
   '-3':   'data error',          /* Z_DATA_ERROR    (-3) */
@@ -18051,7 +19021,7 @@ module.exports = {
   '-6':   'incompatible version' /* Z_VERSION_ERROR (-6) */
 };
 
-},{}],81:[function(require,module,exports){
+},{}],83:[function(require,module,exports){
 'use strict';
 
 
@@ -18109,7 +19079,7 @@ var D_CODES       = 30;
 var BL_CODES      = 19;
 /* number of codes used to transfer the bit lengths */
 
-var HEAP_SIZE     = 2*L_CODES + 1;
+var HEAP_SIZE     = 2 * L_CODES + 1;
 /* maximum heap size */
 
 var MAX_BITS      = 15;
@@ -18138,6 +19108,7 @@ var REPZ_3_10   = 17;
 var REPZ_11_138 = 18;
 /* repeat a zero length 11-138 times  (7 bits of repeat count) */
 
+/* eslint-disable comma-spacing,array-bracket-spacing */
 var extra_lbits =   /* extra bits for each length code */
   [0,0,0,0,0,0,0,0,1,1,1,1,2,2,2,2,3,3,3,3,4,4,4,4,5,5,5,5,0];
 
@@ -18149,6 +19120,8 @@ var extra_blbits =  /* extra bits for each bit length code */
 
 var bl_order =
   [16,17,18,0,8,7,9,6,10,5,11,4,12,3,13,2,14,1,15];
+/* eslint-enable comma-spacing,array-bracket-spacing */
+
 /* The lengths of the bit length codes are sent in order of decreasing
  * probability, to avoid transmitting the lengths for unused bit length codes.
  */
@@ -18162,7 +19135,7 @@ var bl_order =
 var DIST_CODE_LEN = 512; /* see definition of array dist_code below */
 
 // !!!! Use flat array insdead of structure, Freq = i*2, Len = i*2+1
-var static_ltree  = new Array((L_CODES+2) * 2);
+var static_ltree  = new Array((L_CODES + 2) * 2);
 zero(static_ltree);
 /* The static literal tree. Since the bit lengths are imposed, there is no
  * need for the L_CODES extra codes used during heap construction. However
@@ -18183,7 +19156,7 @@ zero(_dist_code);
  * the 15 bit distances.
  */
 
-var _length_code  = new Array(MAX_MATCH-MIN_MATCH+1);
+var _length_code  = new Array(MAX_MATCH - MIN_MATCH + 1);
 zero(_length_code);
 /* length code for each normalized match length (0 == MIN_MATCH) */
 
@@ -18196,7 +19169,7 @@ zero(base_dist);
 /* First normalized distance for each code (0 = distance of 1) */
 
 
-var StaticTreeDesc = function (static_tree, extra_bits, extra_base, elems, max_length) {
+function StaticTreeDesc(static_tree, extra_bits, extra_base, elems, max_length) {
 
   this.static_tree  = static_tree;  /* static tree or NULL */
   this.extra_bits   = extra_bits;   /* extra bits for each code or NULL */
@@ -18206,7 +19179,7 @@ var StaticTreeDesc = function (static_tree, extra_bits, extra_base, elems, max_l
 
   // show if `static_tree` has data or dummy - needed for monomorphic objects
   this.has_stree    = static_tree && static_tree.length;
-};
+}
 
 
 var static_l_desc;
@@ -18214,11 +19187,11 @@ var static_d_desc;
 var static_bl_desc;
 
 
-var TreeDesc = function(dyn_tree, stat_desc) {
+function TreeDesc(dyn_tree, stat_desc) {
   this.dyn_tree = dyn_tree;     /* the dynamic tree */
   this.max_code = 0;            /* largest code with non zero frequency */
   this.stat_desc = stat_desc;   /* the corresponding static tree */
-};
+}
 
 
 
@@ -18231,7 +19204,7 @@ function d_code(dist) {
  * Output a short LSB first on the stream.
  * IN assertion: there is enough room in pendingBuf.
  */
-function put_short (s, w) {
+function put_short(s, w) {
 //    put_byte(s, (uch)((w) & 0xff));
 //    put_byte(s, (uch)((ush)(w) >> 8));
   s.pending_buf[s.pending++] = (w) & 0xff;
@@ -18257,7 +19230,7 @@ function send_bits(s, value, length) {
 
 
 function send_code(s, c, tree) {
-  send_bits(s, tree[c*2]/*.Code*/, tree[c*2 + 1]/*.Len*/);
+  send_bits(s, tree[c * 2]/*.Code*/, tree[c * 2 + 1]/*.Len*/);
 }
 
 
@@ -18329,16 +19302,16 @@ function gen_bitlen(s, desc)
   /* In a first pass, compute the optimal bit lengths (which may
    * overflow in the case of the bit length tree).
    */
-  tree[s.heap[s.heap_max]*2 + 1]/*.Len*/ = 0; /* root of the heap */
+  tree[s.heap[s.heap_max] * 2 + 1]/*.Len*/ = 0; /* root of the heap */
 
-  for (h = s.heap_max+1; h < HEAP_SIZE; h++) {
+  for (h = s.heap_max + 1; h < HEAP_SIZE; h++) {
     n = s.heap[h];
-    bits = tree[tree[n*2 +1]/*.Dad*/ * 2 + 1]/*.Len*/ + 1;
+    bits = tree[tree[n * 2 + 1]/*.Dad*/ * 2 + 1]/*.Len*/ + 1;
     if (bits > max_length) {
       bits = max_length;
       overflow++;
     }
-    tree[n*2 + 1]/*.Len*/ = bits;
+    tree[n * 2 + 1]/*.Len*/ = bits;
     /* We overwrite tree[n].Dad which is no longer needed */
 
     if (n > max_code) { continue; } /* not a leaf node */
@@ -18346,12 +19319,12 @@ function gen_bitlen(s, desc)
     s.bl_count[bits]++;
     xbits = 0;
     if (n >= base) {
-      xbits = extra[n-base];
+      xbits = extra[n - base];
     }
     f = tree[n * 2]/*.Freq*/;
     s.opt_len += f * (bits + xbits);
     if (has_stree) {
-      s.static_len += f * (stree[n*2 + 1]/*.Len*/ + xbits);
+      s.static_len += f * (stree[n * 2 + 1]/*.Len*/ + xbits);
     }
   }
   if (overflow === 0) { return; }
@@ -18361,10 +19334,10 @@ function gen_bitlen(s, desc)
 
   /* Find the first bit length which could increase: */
   do {
-    bits = max_length-1;
+    bits = max_length - 1;
     while (s.bl_count[bits] === 0) { bits--; }
     s.bl_count[bits]--;      /* move one leaf down the tree */
-    s.bl_count[bits+1] += 2; /* move one overflow item as its brother */
+    s.bl_count[bits + 1] += 2; /* move one overflow item as its brother */
     s.bl_count[max_length]--;
     /* The brother of the overflow item also moves one step up,
      * but this does not affect bl_count[max_length]
@@ -18382,10 +19355,10 @@ function gen_bitlen(s, desc)
     while (n !== 0) {
       m = s.heap[--h];
       if (m > max_code) { continue; }
-      if (tree[m*2 + 1]/*.Len*/ !== bits) {
+      if (tree[m * 2 + 1]/*.Len*/ !== bits) {
         // Trace((stderr,"code %d bits %d->%d\n", m, tree[m].Len, bits));
-        s.opt_len += (bits - tree[m*2 + 1]/*.Len*/)*tree[m*2]/*.Freq*/;
-        tree[m*2 + 1]/*.Len*/ = bits;
+        s.opt_len += (bits - tree[m * 2 + 1]/*.Len*/) * tree[m * 2]/*.Freq*/;
+        tree[m * 2 + 1]/*.Len*/ = bits;
       }
       n--;
     }
@@ -18406,7 +19379,7 @@ function gen_codes(tree, max_code, bl_count)
 //    int max_code;              /* largest code with non zero frequency */
 //    ushf *bl_count;            /* number of codes at each bit length */
 {
-  var next_code = new Array(MAX_BITS+1); /* next code value for each bit length */
+  var next_code = new Array(MAX_BITS + 1); /* next code value for each bit length */
   var code = 0;              /* running code value */
   var bits;                  /* bit index */
   var n;                     /* code index */
@@ -18415,7 +19388,7 @@ function gen_codes(tree, max_code, bl_count)
    * without bit reversal.
    */
   for (bits = 1; bits <= MAX_BITS; bits++) {
-    next_code[bits] = code = (code + bl_count[bits-1]) << 1;
+    next_code[bits] = code = (code + bl_count[bits - 1]) << 1;
   }
   /* Check that the bit counts in bl_count are consistent. The last code
    * must be all ones.
@@ -18425,10 +19398,10 @@ function gen_codes(tree, max_code, bl_count)
   //Tracev((stderr,"\ngen_codes: max_code %d ", max_code));
 
   for (n = 0;  n <= max_code; n++) {
-    var len = tree[n*2 + 1]/*.Len*/;
+    var len = tree[n * 2 + 1]/*.Len*/;
     if (len === 0) { continue; }
     /* Now reverse the bits */
-    tree[n*2]/*.Code*/ = bi_reverse(next_code[len]++, len);
+    tree[n * 2]/*.Code*/ = bi_reverse(next_code[len]++, len);
 
     //Tracecv(tree != static_ltree, (stderr,"\nn %3d %c l %2d c %4x (%x) ",
     //     n, (isgraph(n) ? n : ' '), len, tree[n].Code, next_code[len]-1));
@@ -18445,7 +19418,7 @@ function tr_static_init() {
   var length;   /* length value */
   var code;     /* code value */
   var dist;     /* distance index */
-  var bl_count = new Array(MAX_BITS+1);
+  var bl_count = new Array(MAX_BITS + 1);
   /* number of codes at each bit length for an optimal tree */
 
   // do check in _tr_init()
@@ -18462,9 +19435,9 @@ function tr_static_init() {
 
   /* Initialize the mapping length (0..255) -> length code (0..28) */
   length = 0;
-  for (code = 0; code < LENGTH_CODES-1; code++) {
+  for (code = 0; code < LENGTH_CODES - 1; code++) {
     base_length[code] = length;
-    for (n = 0; n < (1<<extra_lbits[code]); n++) {
+    for (n = 0; n < (1 << extra_lbits[code]); n++) {
       _length_code[length++] = code;
     }
   }
@@ -18473,13 +19446,13 @@ function tr_static_init() {
    * in two different ways: code 284 + 5 bits or code 285, so we
    * overwrite length_code[255] to use the best encoding:
    */
-  _length_code[length-1] = code;
+  _length_code[length - 1] = code;
 
   /* Initialize the mapping dist (0..32K) -> dist code (0..29) */
   dist = 0;
-  for (code = 0 ; code < 16; code++) {
+  for (code = 0; code < 16; code++) {
     base_dist[code] = dist;
-    for (n = 0; n < (1<<extra_dbits[code]); n++) {
+    for (n = 0; n < (1 << extra_dbits[code]); n++) {
       _dist_code[dist++] = code;
     }
   }
@@ -18487,7 +19460,7 @@ function tr_static_init() {
   dist >>= 7; /* from now on, all distances are divided by 128 */
   for (; code < D_CODES; code++) {
     base_dist[code] = dist << 7;
-    for (n = 0; n < (1<<(extra_dbits[code]-7)); n++) {
+    for (n = 0; n < (1 << (extra_dbits[code] - 7)); n++) {
       _dist_code[256 + dist++] = code;
     }
   }
@@ -18500,22 +19473,22 @@ function tr_static_init() {
 
   n = 0;
   while (n <= 143) {
-    static_ltree[n*2 + 1]/*.Len*/ = 8;
+    static_ltree[n * 2 + 1]/*.Len*/ = 8;
     n++;
     bl_count[8]++;
   }
   while (n <= 255) {
-    static_ltree[n*2 + 1]/*.Len*/ = 9;
+    static_ltree[n * 2 + 1]/*.Len*/ = 9;
     n++;
     bl_count[9]++;
   }
   while (n <= 279) {
-    static_ltree[n*2 + 1]/*.Len*/ = 7;
+    static_ltree[n * 2 + 1]/*.Len*/ = 7;
     n++;
     bl_count[7]++;
   }
   while (n <= 287) {
-    static_ltree[n*2 + 1]/*.Len*/ = 8;
+    static_ltree[n * 2 + 1]/*.Len*/ = 8;
     n++;
     bl_count[8]++;
   }
@@ -18523,18 +19496,18 @@ function tr_static_init() {
    * tree construction to get a canonical Huffman tree (longest code
    * all ones)
    */
-  gen_codes(static_ltree, L_CODES+1, bl_count);
+  gen_codes(static_ltree, L_CODES + 1, bl_count);
 
   /* The static distance tree is trivial: */
   for (n = 0; n < D_CODES; n++) {
-    static_dtree[n*2 + 1]/*.Len*/ = 5;
-    static_dtree[n*2]/*.Code*/ = bi_reverse(n, 5);
+    static_dtree[n * 2 + 1]/*.Len*/ = 5;
+    static_dtree[n * 2]/*.Code*/ = bi_reverse(n, 5);
   }
 
   // Now data ready and we can init static trees
-  static_l_desc = new StaticTreeDesc(static_ltree, extra_lbits, LITERALS+1, L_CODES, MAX_BITS);
+  static_l_desc = new StaticTreeDesc(static_ltree, extra_lbits, LITERALS + 1, L_CODES, MAX_BITS);
   static_d_desc = new StaticTreeDesc(static_dtree, extra_dbits, 0,          D_CODES, MAX_BITS);
-  static_bl_desc =new StaticTreeDesc(new Array(0), extra_blbits, 0,         BL_CODES, MAX_BL_BITS);
+  static_bl_desc = new StaticTreeDesc(new Array(0), extra_blbits, 0,         BL_CODES, MAX_BL_BITS);
 
   //static_init_done = true;
 }
@@ -18547,11 +19520,11 @@ function init_block(s) {
   var n; /* iterates over tree elements */
 
   /* Initialize the trees. */
-  for (n = 0; n < L_CODES;  n++) { s.dyn_ltree[n*2]/*.Freq*/ = 0; }
-  for (n = 0; n < D_CODES;  n++) { s.dyn_dtree[n*2]/*.Freq*/ = 0; }
-  for (n = 0; n < BL_CODES; n++) { s.bl_tree[n*2]/*.Freq*/ = 0; }
+  for (n = 0; n < L_CODES;  n++) { s.dyn_ltree[n * 2]/*.Freq*/ = 0; }
+  for (n = 0; n < D_CODES;  n++) { s.dyn_dtree[n * 2]/*.Freq*/ = 0; }
+  for (n = 0; n < BL_CODES; n++) { s.bl_tree[n * 2]/*.Freq*/ = 0; }
 
-  s.dyn_ltree[END_BLOCK*2]/*.Freq*/ = 1;
+  s.dyn_ltree[END_BLOCK * 2]/*.Freq*/ = 1;
   s.opt_len = s.static_len = 0;
   s.last_lit = s.matches = 0;
 }
@@ -18600,8 +19573,8 @@ function copy_block(s, buf, len, header)
  * the subtrees have equal frequency. This minimizes the worst case length.
  */
 function smaller(tree, n, m, depth) {
-  var _n2 = n*2;
-  var _m2 = m*2;
+  var _n2 = n * 2;
+  var _m2 = m * 2;
   return (tree[_n2]/*.Freq*/ < tree[_m2]/*.Freq*/ ||
          (tree[_n2]/*.Freq*/ === tree[_m2]/*.Freq*/ && depth[n] <= depth[m]));
 }
@@ -18622,7 +19595,7 @@ function pqdownheap(s, tree, k)
   while (j <= s.heap_len) {
     /* Set j to the smallest of the two sons: */
     if (j < s.heap_len &&
-      smaller(tree, s.heap[j+1], s.heap[j], s.depth)) {
+      smaller(tree, s.heap[j + 1], s.heap[j], s.depth)) {
       j++;
     }
     /* Exit if v is smaller than both sons */
@@ -18658,7 +19631,7 @@ function compress_block(s, ltree, dtree)
 
   if (s.last_lit !== 0) {
     do {
-      dist = (s.pending_buf[s.d_buf + lx*2] << 8) | (s.pending_buf[s.d_buf + lx*2 + 1]);
+      dist = (s.pending_buf[s.d_buf + lx * 2] << 8) | (s.pending_buf[s.d_buf + lx * 2 + 1]);
       lc = s.pending_buf[s.l_buf + lx];
       lx++;
 
@@ -18668,7 +19641,7 @@ function compress_block(s, ltree, dtree)
       } else {
         /* Here, lc is the match length - MIN_MATCH */
         code = _length_code[lc];
-        send_code(s, code+LITERALS+1, ltree); /* send the length code */
+        send_code(s, code + LITERALS + 1, ltree); /* send the length code */
         extra = extra_lbits[code];
         if (extra !== 0) {
           lc -= base_length[code];
@@ -18730,7 +19703,7 @@ function build_tree(s, desc)
       s.depth[n] = 0;
 
     } else {
-      tree[n*2 + 1]/*.Len*/ = 0;
+      tree[n * 2 + 1]/*.Len*/ = 0;
     }
   }
 
@@ -18746,7 +19719,7 @@ function build_tree(s, desc)
     s.opt_len--;
 
     if (has_stree) {
-      s.static_len -= stree[node*2 + 1]/*.Len*/;
+      s.static_len -= stree[node * 2 + 1]/*.Len*/;
     }
     /* node is 0 or 1 so it does not have extra bits */
   }
@@ -18777,7 +19750,7 @@ function build_tree(s, desc)
     /* Create a new node father of n and m */
     tree[node * 2]/*.Freq*/ = tree[n * 2]/*.Freq*/ + tree[m * 2]/*.Freq*/;
     s.depth[node] = (s.depth[n] >= s.depth[m] ? s.depth[n] : s.depth[m]) + 1;
-    tree[n*2 + 1]/*.Dad*/ = tree[m*2 + 1]/*.Dad*/ = node;
+    tree[n * 2 + 1]/*.Dad*/ = tree[m * 2 + 1]/*.Dad*/ = node;
 
     /* and insert the new node in the heap */
     s.heap[1/*SMALLEST*/] = node++;
@@ -18810,7 +19783,7 @@ function scan_tree(s, tree, max_code)
   var prevlen = -1;          /* last emitted length */
   var curlen;                /* length of current code */
 
-  var nextlen = tree[0*2 + 1]/*.Len*/; /* length of next code */
+  var nextlen = tree[0 * 2 + 1]/*.Len*/; /* length of next code */
 
   var count = 0;             /* repeat count of the current code */
   var max_count = 7;         /* max repeat count */
@@ -18820,11 +19793,11 @@ function scan_tree(s, tree, max_code)
     max_count = 138;
     min_count = 3;
   }
-  tree[(max_code+1)*2 + 1]/*.Len*/ = 0xffff; /* guard */
+  tree[(max_code + 1) * 2 + 1]/*.Len*/ = 0xffff; /* guard */
 
   for (n = 0; n <= max_code; n++) {
     curlen = nextlen;
-    nextlen = tree[(n+1)*2 + 1]/*.Len*/;
+    nextlen = tree[(n + 1) * 2 + 1]/*.Len*/;
 
     if (++count < max_count && curlen === nextlen) {
       continue;
@@ -18835,13 +19808,13 @@ function scan_tree(s, tree, max_code)
     } else if (curlen !== 0) {
 
       if (curlen !== prevlen) { s.bl_tree[curlen * 2]/*.Freq*/++; }
-      s.bl_tree[REP_3_6*2]/*.Freq*/++;
+      s.bl_tree[REP_3_6 * 2]/*.Freq*/++;
 
     } else if (count <= 10) {
-      s.bl_tree[REPZ_3_10*2]/*.Freq*/++;
+      s.bl_tree[REPZ_3_10 * 2]/*.Freq*/++;
 
     } else {
-      s.bl_tree[REPZ_11_138*2]/*.Freq*/++;
+      s.bl_tree[REPZ_11_138 * 2]/*.Freq*/++;
     }
 
     count = 0;
@@ -18876,7 +19849,7 @@ function send_tree(s, tree, max_code)
   var prevlen = -1;          /* last emitted length */
   var curlen;                /* length of current code */
 
-  var nextlen = tree[0*2 + 1]/*.Len*/; /* length of next code */
+  var nextlen = tree[0 * 2 + 1]/*.Len*/; /* length of next code */
 
   var count = 0;             /* repeat count of the current code */
   var max_count = 7;         /* max repeat count */
@@ -18890,7 +19863,7 @@ function send_tree(s, tree, max_code)
 
   for (n = 0; n <= max_code; n++) {
     curlen = nextlen;
-    nextlen = tree[(n+1)*2 + 1]/*.Len*/;
+    nextlen = tree[(n + 1) * 2 + 1]/*.Len*/;
 
     if (++count < max_count && curlen === nextlen) {
       continue;
@@ -18905,15 +19878,15 @@ function send_tree(s, tree, max_code)
       }
       //Assert(count >= 3 && count <= 6, " 3_6?");
       send_code(s, REP_3_6, s.bl_tree);
-      send_bits(s, count-3, 2);
+      send_bits(s, count - 3, 2);
 
     } else if (count <= 10) {
       send_code(s, REPZ_3_10, s.bl_tree);
-      send_bits(s, count-3, 3);
+      send_bits(s, count - 3, 3);
 
     } else {
       send_code(s, REPZ_11_138, s.bl_tree);
-      send_bits(s, count-11, 7);
+      send_bits(s, count - 11, 7);
     }
 
     count = 0;
@@ -18955,13 +19928,13 @@ function build_bl_tree(s) {
    * requires that at least 4 bit length codes be sent. (appnote.txt says
    * 3 but the actual value used is 4.)
    */
-  for (max_blindex = BL_CODES-1; max_blindex >= 3; max_blindex--) {
-    if (s.bl_tree[bl_order[max_blindex]*2 + 1]/*.Len*/ !== 0) {
+  for (max_blindex = BL_CODES - 1; max_blindex >= 3; max_blindex--) {
+    if (s.bl_tree[bl_order[max_blindex] * 2 + 1]/*.Len*/ !== 0) {
       break;
     }
   }
   /* Update opt_len to include the bit length tree and counts */
-  s.opt_len += 3*(max_blindex+1) + 5+5+4;
+  s.opt_len += 3 * (max_blindex + 1) + 5 + 5 + 4;
   //Tracev((stderr, "\ndyn trees: dyn %ld, stat %ld",
   //        s->opt_len, s->static_len));
 
@@ -18984,19 +19957,19 @@ function send_all_trees(s, lcodes, dcodes, blcodes)
   //Assert (lcodes <= L_CODES && dcodes <= D_CODES && blcodes <= BL_CODES,
   //        "too many codes");
   //Tracev((stderr, "\nbl counts: "));
-  send_bits(s, lcodes-257, 5); /* not +255 as stated in appnote.txt */
-  send_bits(s, dcodes-1,   5);
-  send_bits(s, blcodes-4,  4); /* not -3 as stated in appnote.txt */
+  send_bits(s, lcodes - 257, 5); /* not +255 as stated in appnote.txt */
+  send_bits(s, dcodes - 1,   5);
+  send_bits(s, blcodes - 4,  4); /* not -3 as stated in appnote.txt */
   for (rank = 0; rank < blcodes; rank++) {
     //Tracev((stderr, "\nbl code %2d ", bl_order[rank]));
-    send_bits(s, s.bl_tree[bl_order[rank]*2 + 1]/*.Len*/, 3);
+    send_bits(s, s.bl_tree[bl_order[rank] * 2 + 1]/*.Len*/, 3);
   }
   //Tracev((stderr, "\nbl tree: sent %ld", s->bits_sent));
 
-  send_tree(s, s.dyn_ltree, lcodes-1); /* literal tree */
+  send_tree(s, s.dyn_ltree, lcodes - 1); /* literal tree */
   //Tracev((stderr, "\nlit tree: sent %ld", s->bits_sent));
 
-  send_tree(s, s.dyn_dtree, dcodes-1); /* distance tree */
+  send_tree(s, s.dyn_dtree, dcodes - 1); /* distance tree */
   //Tracev((stderr, "\ndist tree: sent %ld", s->bits_sent));
 }
 
@@ -19024,7 +19997,7 @@ function detect_data_type(s) {
 
   /* Check for non-textual ("black-listed") bytes. */
   for (n = 0; n <= 31; n++, black_mask >>>= 1) {
-    if ((black_mask & 1) && (s.dyn_ltree[n*2]/*.Freq*/ !== 0)) {
+    if ((black_mask & 1) && (s.dyn_ltree[n * 2]/*.Freq*/ !== 0)) {
       return Z_BINARY;
     }
   }
@@ -19081,7 +20054,7 @@ function _tr_stored_block(s, buf, stored_len, last)
 //ulg stored_len;   /* length of input block */
 //int last;         /* one if this is the last block for a file */
 {
-  send_bits(s, (STORED_BLOCK<<1)+(last ? 1 : 0), 3);    /* send block type */
+  send_bits(s, (STORED_BLOCK << 1) + (last ? 1 : 0), 3);    /* send block type */
   copy_block(s, buf, stored_len, true); /* with header */
 }
 
@@ -19091,7 +20064,7 @@ function _tr_stored_block(s, buf, stored_len, last)
  * This takes 10 bits, of which 7 may remain in the bit buffer.
  */
 function _tr_align(s) {
-  send_bits(s, STATIC_TREES<<1, 3);
+  send_bits(s, STATIC_TREES << 1, 3);
   send_code(s, END_BLOCK, static_ltree);
   bi_flush(s);
 }
@@ -19136,8 +20109,8 @@ function _tr_flush_block(s, buf, stored_len, last)
     max_blindex = build_bl_tree(s);
 
     /* Determine the best encoding. Compute the block lengths in bytes. */
-    opt_lenb = (s.opt_len+3+7) >>> 3;
-    static_lenb = (s.static_len+3+7) >>> 3;
+    opt_lenb = (s.opt_len + 3 + 7) >>> 3;
+    static_lenb = (s.static_len + 3 + 7) >>> 3;
 
     // Tracev((stderr, "\nopt %lu(%lu) stat %lu(%lu) stored %lu lit %u ",
     //        opt_lenb, s->opt_len, static_lenb, s->static_len, stored_len,
@@ -19150,7 +20123,7 @@ function _tr_flush_block(s, buf, stored_len, last)
     opt_lenb = static_lenb = stored_len + 5; /* force a stored block */
   }
 
-  if ((stored_len+4 <= opt_lenb) && (buf !== -1)) {
+  if ((stored_len + 4 <= opt_lenb) && (buf !== -1)) {
     /* 4: two words for the lengths */
 
     /* The test buf != NULL is only necessary if LIT_BUFSIZE > WSIZE.
@@ -19163,12 +20136,12 @@ function _tr_flush_block(s, buf, stored_len, last)
 
   } else if (s.strategy === Z_FIXED || static_lenb === opt_lenb) {
 
-    send_bits(s, (STATIC_TREES<<1) + (last ? 1 : 0), 3);
+    send_bits(s, (STATIC_TREES << 1) + (last ? 1 : 0), 3);
     compress_block(s, static_ltree, static_dtree);
 
   } else {
-    send_bits(s, (DYN_TREES<<1) + (last ? 1 : 0), 3);
-    send_all_trees(s, s.l_desc.max_code+1, s.d_desc.max_code+1, max_blindex+1);
+    send_bits(s, (DYN_TREES << 1) + (last ? 1 : 0), 3);
+    send_all_trees(s, s.l_desc.max_code + 1, s.d_desc.max_code + 1, max_blindex + 1);
     compress_block(s, s.dyn_ltree, s.dyn_dtree);
   }
   // Assert (s->compressed_len == s->bits_sent, "bad compressed size");
@@ -19203,7 +20176,7 @@ function _tr_tally(s, dist, lc)
 
   if (dist === 0) {
     /* lc is the unmatched char */
-    s.dyn_ltree[lc*2]/*.Freq*/++;
+    s.dyn_ltree[lc * 2]/*.Freq*/++;
   } else {
     s.matches++;
     /* Here, lc is the match length - MIN_MATCH */
@@ -19212,7 +20185,7 @@ function _tr_tally(s, dist, lc)
     //       (ush)lc <= (ush)(MAX_MATCH-MIN_MATCH) &&
     //       (ush)d_code(dist) < (ush)D_CODES,  "_tr_tally: bad match");
 
-    s.dyn_ltree[(_length_code[lc]+LITERALS+1) * 2]/*.Freq*/++;
+    s.dyn_ltree[(_length_code[lc] + LITERALS + 1) * 2]/*.Freq*/++;
     s.dyn_dtree[d_code(dist) * 2]/*.Freq*/++;
   }
 
@@ -19239,7 +20212,7 @@ function _tr_tally(s, dist, lc)
 //  }
 //#endif
 
-  return (s.last_lit === s.lit_bufsize-1);
+  return (s.last_lit === s.lit_bufsize - 1);
   /* We avoid equality with lit_bufsize because of wraparound at 64K
    * on 16 bit machines and because stored blocks are restricted to
    * 64K-1 bytes.
@@ -19252,7 +20225,7 @@ exports._tr_flush_block  = _tr_flush_block;
 exports._tr_tally = _tr_tally;
 exports._tr_align = _tr_align;
 
-},{"../utils/common":70}],82:[function(require,module,exports){
+},{"../utils/common":72}],84:[function(require,module,exports){
 'use strict';
 
 
@@ -19283,7 +20256,7 @@ function ZStream() {
 
 module.exports = ZStream;
 
-},{}],83:[function(require,module,exports){
+},{}],85:[function(require,module,exports){
 (function (process){
 // Copyright Joyent, Inc. and other Node contributors.
 //
@@ -19510,8 +20483,163 @@ var substr = 'ab'.substr(-1) === 'b'
     }
 ;
 
-}).call(this,require("g5I+bs"))
-},{"g5I+bs":85}],84:[function(require,module,exports){
+}).call(this,require('_process'))
+},{"_process":88}],86:[function(require,module,exports){
+'use strict';
+
+/**
+ * Based off of [the offical Google document](https://developers.google.com/maps/documentation/utilities/polylinealgorithm)
+ *
+ * Some parts from [this implementation](http://facstaff.unca.edu/mcmcclur/GoogleMaps/EncodePolyline/PolylineEncoder.js)
+ * by [Mark McClure](http://facstaff.unca.edu/mcmcclur/)
+ *
+ * @module polyline
+ */
+
+var polyline = {};
+
+function encode(coordinate, factor) {
+    coordinate = Math.round(coordinate * factor);
+    coordinate <<= 1;
+    if (coordinate < 0) {
+        coordinate = ~coordinate;
+    }
+    var output = '';
+    while (coordinate >= 0x20) {
+        output += String.fromCharCode((0x20 | (coordinate & 0x1f)) + 63);
+        coordinate >>= 5;
+    }
+    output += String.fromCharCode(coordinate + 63);
+    return output;
+}
+
+/**
+ * Decodes to a [latitude, longitude] coordinates array.
+ *
+ * This is adapted from the implementation in Project-OSRM.
+ *
+ * @param {String} str
+ * @param {Number} precision
+ * @returns {Array}
+ *
+ * @see https://github.com/Project-OSRM/osrm-frontend/blob/master/WebContent/routing/OSRM.RoutingGeometry.js
+ */
+polyline.decode = function(str, precision) {
+    var index = 0,
+        lat = 0,
+        lng = 0,
+        coordinates = [],
+        shift = 0,
+        result = 0,
+        byte = null,
+        latitude_change,
+        longitude_change,
+        factor = Math.pow(10, precision || 5);
+
+    // Coordinates have variable length when encoded, so just keep
+    // track of whether we've hit the end of the string. In each
+    // loop iteration, a single coordinate is decoded.
+    while (index < str.length) {
+
+        // Reset shift, result, and byte
+        byte = null;
+        shift = 0;
+        result = 0;
+
+        do {
+            byte = str.charCodeAt(index++) - 63;
+            result |= (byte & 0x1f) << shift;
+            shift += 5;
+        } while (byte >= 0x20);
+
+        latitude_change = ((result & 1) ? ~(result >> 1) : (result >> 1));
+
+        shift = result = 0;
+
+        do {
+            byte = str.charCodeAt(index++) - 63;
+            result |= (byte & 0x1f) << shift;
+            shift += 5;
+        } while (byte >= 0x20);
+
+        longitude_change = ((result & 1) ? ~(result >> 1) : (result >> 1));
+
+        lat += latitude_change;
+        lng += longitude_change;
+
+        coordinates.push([lat / factor, lng / factor]);
+    }
+
+    return coordinates;
+};
+
+/**
+ * Encodes the given [latitude, longitude] coordinates array.
+ *
+ * @param {Array.<Array.<Number>>} coordinates
+ * @param {Number} precision
+ * @returns {String}
+ */
+polyline.encode = function(coordinates, precision) {
+    if (!coordinates.length) { return ''; }
+
+    var factor = Math.pow(10, precision || 5),
+        output = encode(coordinates[0][0], factor) + encode(coordinates[0][1], factor);
+
+    for (var i = 1; i < coordinates.length; i++) {
+        var a = coordinates[i], b = coordinates[i - 1];
+        output += encode(a[0] - b[0], factor);
+        output += encode(a[1] - b[1], factor);
+    }
+
+    return output;
+};
+
+function flipped(coords) {
+    var flipped = [];
+    for (var i = 0; i < coords.length; i++) {
+        flipped.push(coords[i].slice().reverse());
+    }
+    return flipped;
+}
+
+/**
+ * Encodes a GeoJSON LineString feature/geometry.
+ *
+ * @param {Object} geojson
+ * @param {Number} precision
+ * @returns {String}
+ */
+polyline.fromGeoJSON = function(geojson, precision) {
+    if (geojson && geojson.type === 'Feature') {
+        geojson = geojson.geometry;
+    }
+    if (!geojson || geojson.type !== 'LineString') {
+        throw new Error('Input must be a GeoJSON LineString');
+    }
+    return polyline.encode(flipped(geojson.coordinates), precision);
+};
+
+/**
+ * Decodes to a GeoJSON LineString geometry.
+ *
+ * @param {String} str
+ * @param {Number} precision
+ * @returns {Object}
+ */
+polyline.toGeoJSON = function(str, precision) {
+    var coords = polyline.decode(str, precision);
+    return {
+        type: 'LineString',
+        coordinates: flipped(coords)
+    };
+};
+
+if (typeof module === 'object' && module.exports) {
+    module.exports = polyline;
+}
+
+},{}],87:[function(require,module,exports){
 module.exports = function (data) {
     var lines = data.split('\n'),
                 isNameLine = true,
@@ -19577,50 +20705,167 @@ module.exports = function (data) {
     return gj;
 };
 
-},{}],85:[function(require,module,exports){
+},{}],88:[function(require,module,exports){
 // shim for using process in browser
-
 var process = module.exports = {};
 
-process.nextTick = (function () {
-    var canSetImmediate = typeof window !== 'undefined'
-    && window.setImmediate;
-    var canPost = typeof window !== 'undefined'
-    && window.postMessage && window.addEventListener
-    ;
+// cached from whatever global is present so that test runners that stub it
+// don't break things.  But we need to wrap it in a try catch in case it is
+// wrapped in strict mode code which doesn't define any globals.  It's inside a
+// function because try/catches deoptimize in certain engines.
 
-    if (canSetImmediate) {
-        return function (f) { return window.setImmediate(f) };
+var cachedSetTimeout;
+var cachedClearTimeout;
+
+function defaultSetTimout() {
+    throw new Error('setTimeout has not been defined');
+}
+function defaultClearTimeout () {
+    throw new Error('clearTimeout has not been defined');
+}
+(function () {
+    try {
+        if (typeof setTimeout === 'function') {
+            cachedSetTimeout = setTimeout;
+        } else {
+            cachedSetTimeout = defaultSetTimout;
+        }
+    } catch (e) {
+        cachedSetTimeout = defaultSetTimout;
+    }
+    try {
+        if (typeof clearTimeout === 'function') {
+            cachedClearTimeout = clearTimeout;
+        } else {
+            cachedClearTimeout = defaultClearTimeout;
+        }
+    } catch (e) {
+        cachedClearTimeout = defaultClearTimeout;
+    }
+} ())
+function runTimeout(fun) {
+    if (cachedSetTimeout === setTimeout) {
+        //normal enviroments in sane situations
+        return setTimeout(fun, 0);
+    }
+    // if setTimeout wasn't available but was latter defined
+    if ((cachedSetTimeout === defaultSetTimout || !cachedSetTimeout) && setTimeout) {
+        cachedSetTimeout = setTimeout;
+        return setTimeout(fun, 0);
+    }
+    try {
+        // when when somebody has screwed with setTimeout but no I.E. maddness
+        return cachedSetTimeout(fun, 0);
+    } catch(e){
+        try {
+            // When we are in I.E. but the script has been evaled so I.E. doesn't trust the global object when called normally
+            return cachedSetTimeout.call(null, fun, 0);
+        } catch(e){
+            // same as above but when it's a version of I.E. that must have the global object for 'this', hopfully our context correct otherwise it will throw a global error
+            return cachedSetTimeout.call(this, fun, 0);
+        }
     }
 
-    if (canPost) {
-        var queue = [];
-        window.addEventListener('message', function (ev) {
-            var source = ev.source;
-            if ((source === window || source === null) && ev.data === 'process-tick') {
-                ev.stopPropagation();
-                if (queue.length > 0) {
-                    var fn = queue.shift();
-                    fn();
-                }
+
+}
+function runClearTimeout(marker) {
+    if (cachedClearTimeout === clearTimeout) {
+        //normal enviroments in sane situations
+        return clearTimeout(marker);
+    }
+    // if clearTimeout wasn't available but was latter defined
+    if ((cachedClearTimeout === defaultClearTimeout || !cachedClearTimeout) && clearTimeout) {
+        cachedClearTimeout = clearTimeout;
+        return clearTimeout(marker);
+    }
+    try {
+        // when when somebody has screwed with setTimeout but no I.E. maddness
+        return cachedClearTimeout(marker);
+    } catch (e){
+        try {
+            // When we are in I.E. but the script has been evaled so I.E. doesn't  trust the global object when called normally
+            return cachedClearTimeout.call(null, marker);
+        } catch (e){
+            // same as above but when it's a version of I.E. that must have the global object for 'this', hopfully our context correct otherwise it will throw a global error.
+            // Some versions of I.E. have different rules for clearTimeout vs setTimeout
+            return cachedClearTimeout.call(this, marker);
+        }
+    }
+
+
+
+}
+var queue = [];
+var draining = false;
+var currentQueue;
+var queueIndex = -1;
+
+function cleanUpNextTick() {
+    if (!draining || !currentQueue) {
+        return;
+    }
+    draining = false;
+    if (currentQueue.length) {
+        queue = currentQueue.concat(queue);
+    } else {
+        queueIndex = -1;
+    }
+    if (queue.length) {
+        drainQueue();
+    }
+}
+
+function drainQueue() {
+    if (draining) {
+        return;
+    }
+    var timeout = runTimeout(cleanUpNextTick);
+    draining = true;
+
+    var len = queue.length;
+    while(len) {
+        currentQueue = queue;
+        queue = [];
+        while (++queueIndex < len) {
+            if (currentQueue) {
+                currentQueue[queueIndex].run();
             }
-        }, true);
-
-        return function nextTick(fn) {
-            queue.push(fn);
-            window.postMessage('process-tick', '*');
-        };
+        }
+        queueIndex = -1;
+        len = queue.length;
     }
+    currentQueue = null;
+    draining = false;
+    runClearTimeout(timeout);
+}
 
-    return function nextTick(fn) {
-        setTimeout(fn, 0);
-    };
-})();
+process.nextTick = function (fun) {
+    var args = new Array(arguments.length - 1);
+    if (arguments.length > 1) {
+        for (var i = 1; i < arguments.length; i++) {
+            args[i - 1] = arguments[i];
+        }
+    }
+    queue.push(new Item(fun, args));
+    if (queue.length === 1 && !draining) {
+        runTimeout(drainQueue);
+    }
+};
 
+// v8 likes predictible objects
+function Item(fun, array) {
+    this.fun = fun;
+    this.array = array;
+}
+Item.prototype.run = function () {
+    this.fun.apply(null, this.array);
+};
 process.title = 'browser';
 process.browser = true;
 process.env = {};
 process.argv = [];
+process.version = ''; // empty string to avoid regexp issues
+process.versions = {};
 
 function noop() {}
 
@@ -19634,15 +20879,15 @@ process.emit = noop;
 
 process.binding = function (name) {
     throw new Error('process.binding is not supported');
-}
+};
 
-// TODO(shtylman)
 process.cwd = function () { return '/' };
 process.chdir = function (dir) {
     throw new Error('process.chdir is not supported');
 };
+process.umask = function() { return 0; };
 
-},{}],86:[function(require,module,exports){
+},{}],89:[function(require,module,exports){
 /*
  * Given a querystring, return an object of that querystring's components.
  *
@@ -19675,7 +20920,7 @@ module.exports.qsString = function(obj, noencode) {
     }).join('&');
 };
 
-},{}],87:[function(require,module,exports){
+},{}],90:[function(require,module,exports){
 (function() {
   var slice = [].slice;
 
@@ -19757,7 +21002,7 @@ module.exports.qsString = function(obj, noencode) {
   else this.queue = queue;
 })();
 
-},{}],88:[function(require,module,exports){
+},{}],91:[function(require,module,exports){
 module.exports = function(x, dims) {
     if (!dims) dims = 'NSEW';
     if (typeof x !== 'string') return null;
@@ -19771,11 +21016,11 @@ module.exports = function(x, dims) {
         ((m[4] && m[4] === 'S' || m[4] === 'W') ? -1 : 1);
 };
 
-},{}],89:[function(require,module,exports){
+},{}],92:[function(require,module,exports){
 module.exports.download = require('./src/download')
 module.exports.write = require('./src/write')
 module.exports.zip = require('./src/zip')
-},{"./src/download":90,"./src/write":98,"./src/zip":99}],90:[function(require,module,exports){
+},{"./src/download":93,"./src/write":101,"./src/zip":102}],93:[function(require,module,exports){
 var zip = require('./zip');
 
 module.exports = function(gj, options) {
@@ -19783,7 +21028,7 @@ module.exports = function(gj, options) {
     location.href = 'data:application/zip;base64,' + content;
 };
 
-},{"./zip":99}],91:[function(require,module,exports){
+},{"./zip":102}],94:[function(require,module,exports){
 module.exports.enlarge = function enlargeExtent(extent, pt) {
     if (pt[0] < extent.xmin) extent.xmin = pt[0];
     if (pt[0] > extent.xmax) extent.xmax = pt[0];
@@ -19809,7 +21054,7 @@ module.exports.blank = function() {
     };
 };
 
-},{}],92:[function(require,module,exports){
+},{}],95:[function(require,module,exports){
 var types = require('./types').jstypes;
 
 module.exports.geojson = geojson;
@@ -19839,7 +21084,7 @@ function obj(_) {
     return o;
 }
 
-},{"./types":97}],93:[function(require,module,exports){
+},{"./types":100}],96:[function(require,module,exports){
 module.exports.point = justType('Point', 'POINT');
 module.exports.line = justType('LineString', 'POLYLINE');
 module.exports.polygon = justType('Polygon', 'POLYGON');
@@ -19873,7 +21118,7 @@ function isType(t) {
     return function(f) { return f.geometry.type === t; };
 }
 
-},{}],94:[function(require,module,exports){
+},{}],97:[function(require,module,exports){
 var ext = require('./extent');
 
 module.exports.write = function writePoints(coordinates, extent, shpView, shxView) {
@@ -19920,7 +21165,7 @@ module.exports.shpLength = function(coordinates) {
     return coordinates.length * 28;
 };
 
-},{"./extent":91}],95:[function(require,module,exports){
+},{"./extent":94}],98:[function(require,module,exports){
 var ext = require('./extent');
 
 module.exports.write = function writePoints(geometries, extent, shpView, shxView, TYPE) {
@@ -20000,10 +21245,10 @@ function justCoords(coords, l) {
     }
 }
 
-},{"./extent":91}],96:[function(require,module,exports){
+},{"./extent":94}],99:[function(require,module,exports){
 module.exports = 'GEOGCS["GCS_WGS_1984",DATUM["D_WGS_1984",SPHEROID["WGS_1984",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["Degree",0.017453292519943295]]';
 
-},{}],97:[function(require,module,exports){
+},{}],100:[function(require,module,exports){
 module.exports.geometries = {
     NULL: 0,
     POINT: 1,
@@ -20021,7 +21266,7 @@ module.exports.geometries = {
     MULTIPATCH: 31,
 };
 
-},{}],98:[function(require,module,exports){
+},{}],101:[function(require,module,exports){
 var types = require('./types'),
     dbf = require('dbf'),
     prj = require('./prj'),
@@ -20090,7 +21335,7 @@ function writeExtent(extent, view) {
     view.setFloat64(60, extent.ymax, true);
 }
 
-},{"./extent":91,"./fields":92,"./points":94,"./poly":95,"./prj":96,"./types":97,"assert":2,"dbf":11}],99:[function(require,module,exports){
+},{"./extent":94,"./fields":95,"./points":97,"./poly":98,"./prj":99,"./types":100,"assert":4,"dbf":13}],102:[function(require,module,exports){
 var write = require('./write'),
     geojson = require('./geojson'),
     prj = require('./prj'),
@@ -20124,7 +21369,7 @@ module.exports = function(gj, options) {
     return zip.generate({compression:'STORE'});
 };
 
-},{"./geojson":93,"./prj":96,"./write":98,"jszip":46}],100:[function(require,module,exports){
+},{"./geojson":96,"./prj":99,"./write":101,"jszip":46}],103:[function(require,module,exports){
 var wgs84 = require('wgs84');
 
 module.exports.heading = function(from, to) {
@@ -20178,7 +21423,7 @@ function deg(_) {
     return _ * (180 / Math.PI);
 }
 
-},{"wgs84":142}],101:[function(require,module,exports){
+},{"wgs84":144}],104:[function(require,module,exports){
 (function (global){
 ;(function(win){
 	var store = {},
@@ -20345,8 +21590,8 @@ function deg(_) {
 	
 })(this.window || global);
 
-}).call(this,typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{}],102:[function(require,module,exports){
+}).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
+},{}],105:[function(require,module,exports){
 module.exports.attr = attr;
 module.exports.tagClose = tagClose;
 module.exports.tag = tag;
@@ -20392,7 +21637,7 @@ function encode(_) {
         .replace(/"/g, '&quot;');
 }
 
-},{}],103:[function(require,module,exports){
+},{}],106:[function(require,module,exports){
 (function (process){
 toGeoJSON = (function() {
     'use strict';
@@ -20630,8 +21875,8 @@ toGeoJSON = (function() {
 
 if (typeof module !== 'undefined') module.exports = toGeoJSON;
 
-}).call(this,require("g5I+bs"))
-},{"g5I+bs":85,"xmldom":4}],104:[function(require,module,exports){
+}).call(this,require('_process'))
+},{"_process":88,"xmldom":7}],107:[function(require,module,exports){
 var strxml = require('strxml'),
     tag = strxml.tag,
     encode = strxml.encode;
@@ -20828,20 +22073,7 @@ function pairs(_) {
     return o;
 }
 
-},{"strxml":102}],"topojson":[function(require,module,exports){
-module.exports=require('BOmyIj');
-},{}],"BOmyIj":[function(require,module,exports){
-var topojson = module.exports = require("./topojson");
-topojson.topology = require("./lib/topojson/topology");
-topojson.simplify = require("./lib/topojson/simplify");
-topojson.clockwise = require("./lib/topojson/clockwise");
-topojson.filter = require("./lib/topojson/filter");
-topojson.prune = require("./lib/topojson/prune");
-topojson.bind = require("./lib/topojson/bind");
-topojson.stitch = require("./lib/topojson/stitch");
-topojson.scale = require("./lib/topojson/scale");
-
-},{"./lib/topojson/bind":107,"./lib/topojson/clockwise":110,"./lib/topojson/filter":114,"./lib/topojson/prune":118,"./lib/topojson/scale":120,"./lib/topojson/simplify":121,"./lib/topojson/stitch":123,"./lib/topojson/topology":124,"./topojson":136}],107:[function(require,module,exports){
+},{"strxml":105}],108:[function(require,module,exports){
 var type = require("./type"),
     topojson = require("../../");
 
@@ -20871,7 +22103,7 @@ module.exports = function(topology, propertiesById) {
 
 function noop() {}
 
-},{"../../":"BOmyIj","./type":135}],108:[function(require,module,exports){
+},{"../../":"topojson","./type":136}],109:[function(require,module,exports){
 
 // Computes the bounding box of the specified hash of GeoJSON objects.
 module.exports = function(objects) {
@@ -20918,7 +22150,7 @@ module.exports = function(objects) {
   return [x0, y0, x1, y1];
 };
 
-},{}],109:[function(require,module,exports){
+},{}],110:[function(require,module,exports){
 exports.name = "cartesian";
 exports.formatDistance = formatDistance;
 exports.ringArea = ringArea;
@@ -20958,7 +22190,7 @@ function distance(x0, y0, x1, y1) {
   return Math.sqrt(dx * dx + dy * dy);
 }
 
-},{}],110:[function(require,module,exports){
+},{}],111:[function(require,module,exports){
 var type = require("./type"),
     systems = require("./coordinate-systems"),
     topojson = require("../../");
@@ -21049,7 +22281,7 @@ function clockwisePolygonSystem(ringArea, reverse) {
 
 function noop() {}
 
-},{"../../":"BOmyIj","./coordinate-systems":112,"./type":135}],111:[function(require,module,exports){
+},{"../../":"topojson","./coordinate-systems":113,"./type":136}],112:[function(require,module,exports){
 // Given a hash of GeoJSON objects and an id function, invokes the id function
 // to compute a new id for each object that is a feature. The function is passed
 // the feature and is expected to return the new feature id, or null if the
@@ -21079,13 +22311,13 @@ module.exports = function(objects, id) {
   return objects;
 };
 
-},{}],112:[function(require,module,exports){
+},{}],113:[function(require,module,exports){
 module.exports = {
   cartesian: require("./cartesian"),
   spherical: require("./spherical")
 };
 
-},{"./cartesian":109,"./spherical":122}],113:[function(require,module,exports){
+},{"./cartesian":110,"./spherical":123}],114:[function(require,module,exports){
 // Given a TopoJSON topology in absolute (quantized) coordinates,
 // converts to fixed-point delta encoding.
 // This is a destructive operation that modifies the given topology!
@@ -21116,7 +22348,7 @@ module.exports = function(topology) {
   return topology;
 };
 
-},{}],114:[function(require,module,exports){
+},{}],115:[function(require,module,exports){
 var type = require("./type"),
     prune = require("./prune"),
     clockwise = require("./clockwise"),
@@ -21245,7 +22477,7 @@ function preserveNone() {
   return false;
 }
 
-},{"../../":"BOmyIj","./clockwise":110,"./coordinate-systems":112,"./prune":118,"./type":135}],115:[function(require,module,exports){
+},{"../../":"topojson","./clockwise":111,"./coordinate-systems":113,"./prune":119,"./type":136}],116:[function(require,module,exports){
 // Given a hash of GeoJSON objects, replaces Features with geometry objects.
 // This is a destructive operation that modifies the input objects!
 module.exports = function(objects) {
@@ -21364,7 +22596,7 @@ module.exports = function(objects) {
   return objects;
 };
 
-},{}],116:[function(require,module,exports){
+},{}],117:[function(require,module,exports){
 var quantize = require("./quantize");
 
 module.exports = function(topology, Q0, Q1) {
@@ -21412,7 +22644,7 @@ module.exports = function(topology, Q0, Q1) {
   return topology;
 };
 
-},{"./quantize":119}],117:[function(require,module,exports){
+},{"./quantize":120}],118:[function(require,module,exports){
 var quantize = require("./quantize");
 
 module.exports = function(objects, bbox, Q0, Q1) {
@@ -21471,7 +22703,7 @@ module.exports = function(objects, bbox, Q0, Q1) {
   return q.transform;
 };
 
-},{"./quantize":119}],118:[function(require,module,exports){
+},{"./quantize":120}],119:[function(require,module,exports){
 module.exports = function(topology, options) {
   var verbose = false,
       objects = topology.objects,
@@ -21528,7 +22760,7 @@ module.exports = function(topology, options) {
 
 function noop() {}
 
-},{}],119:[function(require,module,exports){
+},{}],120:[function(require,module,exports){
 module.exports = function(dx, dy, kx, ky) {
 
   function quantizePoint(coordinates) {
@@ -21572,7 +22804,7 @@ module.exports = function(dx, dy, kx, ky) {
   };
 };
 
-},{}],120:[function(require,module,exports){
+},{}],121:[function(require,module,exports){
 var type = require("./type");
 
 module.exports = function(topology, options) {
@@ -21652,7 +22884,7 @@ module.exports = function(topology, options) {
 
 function noop() {}
 
-},{"./type":135}],121:[function(require,module,exports){
+},{"./type":136}],122:[function(require,module,exports){
 var topojson = require("../../"),
     systems = require("./coordinate-systems");
 
@@ -21761,7 +22993,7 @@ module.exports = function(topology, options) {
   return topology;
 };
 
-},{"../../":"BOmyIj","./coordinate-systems":112}],122:[function(require,module,exports){
+},{"../../":"topojson","./coordinate-systems":113}],123:[function(require,module,exports){
 var π = Math.PI,
     π_4 = π / 4,
     radians = π / 180;
@@ -21842,7 +23074,7 @@ function haversin(x) {
   return (x = Math.sin(x / 2)) * x;
 }
 
-},{}],123:[function(require,module,exports){
+},{}],124:[function(require,module,exports){
 var type = require("./type");
 
 module.exports = function(objects, transform) {
@@ -22025,7 +23257,7 @@ module.exports = function(objects, transform) {
   }
 };
 
-},{"./type":135}],124:[function(require,module,exports){
+},{"./type":136}],125:[function(require,module,exports){
 var type = require("./type"),
     stitch = require("./stitch"),
     systems = require("./coordinate-systems"),
@@ -22138,7 +23370,7 @@ module.exports = function(objects, options) {
   return topology;
 };
 
-},{"./bounds":108,"./compute-id":111,"./coordinate-systems":112,"./delta":113,"./geomify":115,"./post-quantize":116,"./pre-quantize":117,"./stitch":123,"./topology/index":130,"./transform-properties":134,"./type":135}],125:[function(require,module,exports){
+},{"./bounds":109,"./compute-id":112,"./coordinate-systems":113,"./delta":114,"./geomify":116,"./post-quantize":117,"./pre-quantize":118,"./stitch":124,"./topology/index":131,"./transform-properties":135,"./type":136}],126:[function(require,module,exports){
 var join = require("./join");
 
 // Given an extracted (pre-)topology, cuts (or rotates) arcs so that all shared
@@ -22200,7 +23432,7 @@ function reverse(array, start, end) {
   }
 }
 
-},{"./join":131}],126:[function(require,module,exports){
+},{"./join":132}],127:[function(require,module,exports){
 var join = require("./join"),
     hashmap = require("./hashmap"),
     hashPoint = require("./point-hash"),
@@ -22386,7 +23618,7 @@ module.exports = function(topology) {
   return topology;
 };
 
-},{"./hashmap":128,"./join":131,"./point-equal":132,"./point-hash":133}],127:[function(require,module,exports){
+},{"./hashmap":129,"./join":132,"./point-equal":133,"./point-hash":134}],128:[function(require,module,exports){
 // Extracts the lines and rings from the specified hash of geometry objects.
 //
 // Returns an object with three properties:
@@ -22453,7 +23685,7 @@ module.exports = function(objects) {
   };
 };
 
-},{}],128:[function(require,module,exports){
+},{}],129:[function(require,module,exports){
 module.exports = function(size, hash, equal, keyType, keyEmpty, valueType) {
   if (arguments.length === 3) {
     keyType = valueType = Array;
@@ -22528,7 +23760,7 @@ module.exports = function(size, hash, equal, keyType, keyEmpty, valueType) {
   };
 };
 
-},{}],129:[function(require,module,exports){
+},{}],130:[function(require,module,exports){
 module.exports = function(size, hash, equal, type, empty) {
   if (arguments.length === 3) {
     type = Array;
@@ -22585,7 +23817,7 @@ module.exports = function(size, hash, equal, type, empty) {
   };
 };
 
-},{}],130:[function(require,module,exports){
+},{}],131:[function(require,module,exports){
 var hashmap = require("./hashmap"),
     extract = require("./extract"),
     cut = require("./cut"),
@@ -22655,7 +23887,7 @@ function equalArc(arcA, arcB) {
   return ia === ib && ja === jb;
 }
 
-},{"./cut":125,"./dedup":126,"./extract":127,"./hashmap":128}],131:[function(require,module,exports){
+},{"./cut":126,"./dedup":127,"./extract":128,"./hashmap":129}],132:[function(require,module,exports){
 var hashset = require("./hashset"),
     hashmap = require("./hashmap"),
     hashPoint = require("./point-hash"),
@@ -22770,12 +24002,12 @@ module.exports = function(topology) {
   return junctionByPoint;
 };
 
-},{"./hashmap":128,"./hashset":129,"./point-equal":132,"./point-hash":133}],132:[function(require,module,exports){
+},{"./hashmap":129,"./hashset":130,"./point-equal":133,"./point-hash":134}],133:[function(require,module,exports){
 module.exports = function(pointA, pointB) {
   return pointA[0] === pointB[0] && pointA[1] === pointB[1];
 };
 
-},{}],133:[function(require,module,exports){
+},{}],134:[function(require,module,exports){
 // TODO if quantized, use simpler Int32 hashing?
 
 var buffer = new ArrayBuffer(16),
@@ -22790,7 +24022,7 @@ module.exports = function(point) {
   return hash & 0x7fffffff;
 };
 
-},{}],134:[function(require,module,exports){
+},{}],135:[function(require,module,exports){
 // Given a hash of GeoJSON objects, transforms any properties on features using
 // the specified transform function. The function is invoked for each existing
 // property on the current feature, being passed the new properties hash, the
@@ -22835,7 +24067,7 @@ module.exports = function(objects, propertyTransform) {
   return objects;
 };
 
-},{}],135:[function(require,module,exports){
+},{}],136:[function(require,module,exports){
 module.exports = function(types) {
   for (var type in typeDefaults) {
     if (!(type in types)) {
@@ -22929,7 +24161,7 @@ var typeObjects = {
   FeatureCollection: 1
 };
 
-},{}],136:[function(require,module,exports){
+},{}],137:[function(require,module,exports){
 !function() {
   var topojson = {
     version: "1.6.8",
@@ -23463,7 +24695,7 @@ var typeObjects = {
   else this.topojson = topojson;
 }();
 
-},{}],137:[function(require,module,exports){
+},{}],138:[function(require,module,exports){
 var traverse = module.exports = function (obj) {
     return new Traverse(obj);
 };
@@ -23779,7 +25011,7 @@ var hasOwnProperty = Object.hasOwnProperty || function (obj, key) {
     return key in obj;
 };
 
-},{}],138:[function(require,module,exports){
+},{}],139:[function(require,module,exports){
 module.exports = function(request) {
     var parent = ce('div', 'treeui'),
         onclick = function() { };
@@ -23878,14 +25110,39 @@ function ae(x, y, z) {
     return x.addEventListener(y, z);
 }
 
-},{}],139:[function(require,module,exports){
+},{}],140:[function(require,module,exports){
+if (typeof Object.create === 'function') {
+  // implementation from standard node.js 'util' module
+  module.exports = function inherits(ctor, superCtor) {
+    ctor.super_ = superCtor
+    ctor.prototype = Object.create(superCtor.prototype, {
+      constructor: {
+        value: ctor,
+        enumerable: false,
+        writable: true,
+        configurable: true
+      }
+    });
+  };
+} else {
+  // old school shim for old browsers
+  module.exports = function inherits(ctor, superCtor) {
+    ctor.super_ = superCtor
+    var TempCtor = function () {}
+    TempCtor.prototype = superCtor.prototype
+    ctor.prototype = new TempCtor()
+    ctor.prototype.constructor = ctor
+  }
+}
+
+},{}],141:[function(require,module,exports){
 module.exports = function isBuffer(arg) {
   return arg && typeof arg === 'object'
     && typeof arg.copy === 'function'
     && typeof arg.fill === 'function'
     && typeof arg.readUInt8 === 'function';
 }
-},{}],140:[function(require,module,exports){
+},{}],142:[function(require,module,exports){
 (function (process,global){
 // Copyright Joyent, Inc. and other Node contributors.
 //
@@ -24474,8 +25731,8 @@ function hasOwnProperty(obj, prop) {
   return Object.prototype.hasOwnProperty.call(obj, prop);
 }
 
-}).call(this,require("g5I+bs"),typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"./support/isBuffer":139,"g5I+bs":85,"inherits":36}],141:[function(require,module,exports){
+}).call(this,require('_process'),typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
+},{"./support/isBuffer":141,"_process":88,"inherits":140}],143:[function(require,module,exports){
 module.exports = parse;
 module.exports.parse = parse;
 module.exports.stringify = stringify;
@@ -24726,12 +25983,2136 @@ function stringify(gj) {
     }
 }
 
-},{}],142:[function(require,module,exports){
+},{}],144:[function(require,module,exports){
 module.exports.RADIUS = 6378137;
 module.exports.FLATTENING = 1/298.257223563;
 module.exports.POLAR_RADIUS = 6356752.3142;
 
-},{}],143:[function(require,module,exports){
+},{}],145:[function(require,module,exports){
+(function (Buffer){
+module.exports = BinaryReader;
+
+function BinaryReader(buffer, isBigEndian) {
+    this.buffer = buffer;
+    this.position = 0;
+    this.isBigEndian = isBigEndian || false;
+}
+
+function _read(readLE, readBE, size) {
+    return function () {
+        var value;
+
+        if (this.isBigEndian)
+            value = readBE.call(this.buffer, this.position);
+        else
+            value = readLE.call(this.buffer, this.position);
+
+        this.position += size;
+
+        return value;
+    };
+}
+
+BinaryReader.prototype.readUInt8 = _read(Buffer.prototype.readUInt8, Buffer.prototype.readUInt8, 1);
+BinaryReader.prototype.readUInt16 = _read(Buffer.prototype.readUInt16LE, Buffer.prototype.readUInt16BE, 2);
+BinaryReader.prototype.readUInt32 = _read(Buffer.prototype.readUInt32LE, Buffer.prototype.readUInt32BE, 4);
+BinaryReader.prototype.readInt8 = _read(Buffer.prototype.readInt8, Buffer.prototype.readInt8, 1);
+BinaryReader.prototype.readInt16 = _read(Buffer.prototype.readInt16LE, Buffer.prototype.readInt16BE, 2);
+BinaryReader.prototype.readInt32 = _read(Buffer.prototype.readInt32LE, Buffer.prototype.readInt32BE, 4);
+BinaryReader.prototype.readFloat = _read(Buffer.prototype.readFloatLE, Buffer.prototype.readFloatBE, 4);
+BinaryReader.prototype.readDouble = _read(Buffer.prototype.readDoubleLE, Buffer.prototype.readDoubleBE, 8);
+
+BinaryReader.prototype.readVarInt = function () {
+    var nextByte,
+        result = 0,
+        bytesRead = 0;
+
+    do {
+        nextByte = this.buffer[this.position + bytesRead];
+        result += (nextByte & 0x7F) << (7 * bytesRead);
+        bytesRead++;
+    } while (nextByte >= 0x80);
+
+    this.position += bytesRead;
+
+    return result;
+};
+
+}).call(this,require("buffer").Buffer)
+},{"buffer":9}],146:[function(require,module,exports){
+(function (Buffer){
+module.exports = BinaryWriter;
+
+function BinaryWriter(size, allowResize) {
+    this.buffer = new Buffer(size);
+    this.position = 0;
+    this.allowResize = allowResize;
+}
+
+function _write(write, size) {
+    return function (value, noAssert) {
+        this.ensureSize(size);
+
+        write.call(this.buffer, value, this.position, noAssert);
+        this.position += size;
+    };
+}
+
+BinaryWriter.prototype.writeUInt8 = _write(Buffer.prototype.writeUInt8, 1);
+BinaryWriter.prototype.writeUInt16LE = _write(Buffer.prototype.writeUInt16LE, 2);
+BinaryWriter.prototype.writeUInt16BE = _write(Buffer.prototype.writeUInt16BE, 2);
+BinaryWriter.prototype.writeUInt32LE = _write(Buffer.prototype.writeUInt32LE, 4);
+BinaryWriter.prototype.writeUInt32BE = _write(Buffer.prototype.writeUInt32BE, 4);
+BinaryWriter.prototype.writeInt8 = _write(Buffer.prototype.writeInt8, 1);
+BinaryWriter.prototype.writeInt16LE = _write(Buffer.prototype.writeInt16LE, 2);
+BinaryWriter.prototype.writeInt16BE = _write(Buffer.prototype.writeInt16BE, 2);
+BinaryWriter.prototype.writeInt32LE = _write(Buffer.prototype.writeInt32LE, 4);
+BinaryWriter.prototype.writeInt32BE = _write(Buffer.prototype.writeInt32BE, 4);
+BinaryWriter.prototype.writeFloatLE = _write(Buffer.prototype.writeFloatLE, 4);
+BinaryWriter.prototype.writeFloatBE = _write(Buffer.prototype.writeFloatBE, 4);
+BinaryWriter.prototype.writeDoubleLE = _write(Buffer.prototype.writeDoubleLE, 8);
+BinaryWriter.prototype.writeDoubleBE = _write(Buffer.prototype.writeDoubleBE, 8);
+
+BinaryWriter.prototype.writeBuffer = function (buffer) {
+    this.ensureSize(buffer.length);
+
+    buffer.copy(this.buffer, this.position, 0, buffer.length);
+    this.position += buffer.length;
+};
+
+BinaryWriter.prototype.writeVarInt = function (value) {
+    var length = 1;
+
+    while ((value & 0xFFFFFF80) !== 0) {
+        this.writeUInt8((value & 0x7F) | 0x80);
+        value >>>= 7;
+        length++;
+    }
+
+    this.writeUInt8(value & 0x7F);
+
+    return length;
+};
+
+BinaryWriter.prototype.ensureSize = function (size) {
+    if (this.buffer.length < this.position + size) {
+        if (this.allowResize) {
+            var tempBuffer = new Buffer(this.position + size);
+            this.buffer.copy(tempBuffer, 0, 0, this.buffer.length);
+            this.buffer = tempBuffer;
+        }
+        else {
+            throw new RangeError('index out of range');
+        }
+    }
+};
+
+}).call(this,require("buffer").Buffer)
+},{"buffer":9}],147:[function(require,module,exports){
+(function (Buffer){
+module.exports = Geometry;
+
+var Types = require('./types');
+var Point = require('./point');
+var LineString = require('./linestring');
+var Polygon = require('./polygon');
+var MultiPoint = require('./multipoint');
+var MultiLineString = require('./multilinestring');
+var MultiPolygon = require('./multipolygon');
+var GeometryCollection = require('./geometrycollection');
+var BinaryReader = require('./binaryreader');
+var BinaryWriter = require('./binarywriter');
+var WktParser = require('./wktparser');
+var ZigZag = require('./zigzag.js');
+
+function Geometry() {
+    this.srid = undefined;
+    this.hasZ = false;
+    this.hasM = false;
+}
+
+Geometry.parse = function (value, options) {
+    var valueType = typeof value;
+
+    if (valueType === 'string' || value instanceof WktParser)
+        return Geometry._parseWkt(value);
+    else if (Buffer.isBuffer(value) || value instanceof BinaryReader)
+        return Geometry._parseWkb(value, options);
+    else
+        throw new Error('first argument must be a string or Buffer');
+};
+
+Geometry._parseWkt = function (value) {
+    var wktParser,
+        srid;
+
+    if (value instanceof WktParser)
+        wktParser = value;
+    else
+        wktParser = new WktParser(value);
+
+    var match = wktParser.matchRegex([/^SRID=(\d+);/]);
+    if (match)
+        srid = parseInt(match[1], 10);
+
+    var geometryType = wktParser.matchType();
+    var dimension = wktParser.matchDimension();
+
+    var options = {
+        srid: srid,
+        hasZ: dimension.hasZ,
+        hasM: dimension.hasM
+    };
+
+    switch (geometryType) {
+    case Types.wkt.Point:
+        return Point._parseWkt(wktParser, options);
+    case Types.wkt.LineString:
+        return LineString._parseWkt(wktParser, options);
+    case Types.wkt.Polygon:
+        return Polygon._parseWkt(wktParser, options);
+    case Types.wkt.MultiPoint:
+        return MultiPoint._parseWkt(wktParser, options);
+    case Types.wkt.MultiLineString:
+        return MultiLineString._parseWkt(wktParser, options);
+    case Types.wkt.MultiPolygon:
+        return MultiPolygon._parseWkt(wktParser, options);
+    case Types.wkt.GeometryCollection:
+        return GeometryCollection._parseWkt(wktParser, options);
+    }
+};
+
+Geometry._parseWkb = function (value, parentOptions) {
+    var binaryReader,
+        wkbType,
+        geometryType,
+        options = {};
+
+    if (value instanceof BinaryReader)
+        binaryReader = value;
+    else
+        binaryReader = new BinaryReader(value);
+
+    binaryReader.isBigEndian = !binaryReader.readInt8();
+
+    wkbType = binaryReader.readUInt32();
+
+    options.hasSrid = (wkbType & 0x20000000) === 0x20000000;
+    options.isEwkb = (wkbType & 0x20000000) || (wkbType & 0x40000000) || (wkbType & 0x80000000);
+    
+    if (options.hasSrid)
+        options.srid = binaryReader.readUInt32();
+
+    options.hasZ = false;
+    options.hasM = false;
+
+    if (!options.isEwkb && (!parentOptions || !parentOptions.isEwkb)) {
+        if (wkbType >= 1000 && wkbType < 2000) {
+            options.hasZ = true;
+            geometryType = wkbType - 1000;
+        }
+        else if (wkbType >= 2000 && wkbType < 3000) {
+            options.hasM = true;
+            geometryType = wkbType - 2000;
+        }
+        else if (wkbType >= 3000 && wkbType < 4000) {
+            options.hasZ = true;
+            options.hasM = true;
+            geometryType = wkbType - 3000;
+        }
+        else {
+            geometryType = wkbType;
+        }
+    }
+    else {
+        if (wkbType & 0x80000000)
+            options.hasZ = true;
+        if (wkbType & 0x40000000)
+            options.hasM = true;
+
+        geometryType = wkbType & 0xF;
+    }
+
+    switch (geometryType) {
+    case Types.wkb.Point:
+        return Point._parseWkb(binaryReader, options);
+    case Types.wkb.LineString:
+        return LineString._parseWkb(binaryReader, options);
+    case Types.wkb.Polygon:
+        return Polygon._parseWkb(binaryReader, options);
+    case Types.wkb.MultiPoint:
+        return MultiPoint._parseWkb(binaryReader, options);
+    case Types.wkb.MultiLineString:
+        return MultiLineString._parseWkb(binaryReader, options);
+    case Types.wkb.MultiPolygon:
+        return MultiPolygon._parseWkb(binaryReader, options);
+    case Types.wkb.GeometryCollection:
+        return GeometryCollection._parseWkb(binaryReader, options);
+    default:
+        throw new Error('GeometryType ' + geometryType + ' not supported');
+    }
+};
+
+Geometry.parseTwkb = function (value) {
+    var binaryReader,
+        options = {};
+
+    if (value instanceof BinaryReader)
+        binaryReader = value;
+    else
+        binaryReader = new BinaryReader(value);
+
+    var type = binaryReader.readUInt8();
+    var metadataHeader = binaryReader.readUInt8();
+
+    var geometryType = type & 0x0F;
+    options.precision = ZigZag.decode(type >> 4);
+    options.precisionFactor = Math.pow(10, options.precision);
+
+    options.hasBoundingBox = metadataHeader >> 0 & 1;
+    options.hasSizeAttribute = metadataHeader >> 1 & 1;
+    options.hasIdList = metadataHeader >> 2 & 1;
+    options.hasExtendedPrecision = metadataHeader >> 3 & 1;
+    options.isEmpty = metadataHeader >> 4 & 1;
+
+    if (options.hasExtendedPrecision) {
+        var extendedPrecision = binaryReader.readUInt8();
+        options.hasZ = (extendedPrecision & 0x01) === 0x01;
+        options.hasM = (extendedPrecision & 0x02) === 0x02;
+
+        options.zPrecision = ZigZag.decode((extendedPrecision & 0x1C) >> 2);
+        options.zPrecisionFactor = Math.pow(10, options.zPrecision);
+
+        options.mPrecision = ZigZag.decode((extendedPrecision & 0xE0) >> 5);
+        options.mPrecisionFactor = Math.pow(10, options.mPrecision);
+    }
+    else {
+        options.hasZ = false;
+        options.hasM = false;
+    }
+
+    if (options.hasSizeAttribute)
+        binaryReader.readVarInt();
+    if (options.hasBoundingBox) {
+        var dimensions = 2;
+
+        if (options.hasZ)
+            dimensions++;
+        if (options.hasM)
+            dimensions++;
+
+        for (var i = 0; i < dimensions; i++) {
+            binaryReader.readVarInt();
+            binaryReader.readVarInt();
+        }
+    }
+
+    switch (geometryType) {
+    case Types.wkb.Point:
+        return Point._parseTwkb(binaryReader, options);
+    case Types.wkb.LineString:
+        return LineString._parseTwkb(binaryReader, options);
+    case Types.wkb.Polygon:
+        return Polygon._parseTwkb(binaryReader, options);
+    case Types.wkb.MultiPoint:
+        return MultiPoint._parseTwkb(binaryReader, options);
+    case Types.wkb.MultiLineString:
+        return MultiLineString._parseTwkb(binaryReader, options);
+    case Types.wkb.MultiPolygon:
+        return MultiPolygon._parseTwkb(binaryReader, options);
+    case Types.wkb.GeometryCollection:
+        return GeometryCollection._parseTwkb(binaryReader, options);
+    default:
+        throw new Error('GeometryType ' + geometryType + ' not supported');
+    }
+};
+
+Geometry.parseGeoJSON = function (value) {
+    var geometry;
+
+    switch (value.type) {
+    case Types.geoJSON.Point:
+        geometry = Point._parseGeoJSON(value); break;
+    case Types.geoJSON.LineString:
+        geometry = LineString._parseGeoJSON(value); break;
+    case Types.geoJSON.Polygon:
+        geometry = Polygon._parseGeoJSON(value); break;
+    case Types.geoJSON.MultiPoint:
+        geometry = MultiPoint._parseGeoJSON(value); break;
+    case Types.geoJSON.MultiLineString:
+        geometry = MultiLineString._parseGeoJSON(value); break;
+    case Types.geoJSON.MultiPolygon:
+        geometry = MultiPolygon._parseGeoJSON(value); break;
+    case Types.geoJSON.GeometryCollection:
+        geometry = GeometryCollection._parseGeoJSON(value); break;
+    default:
+        throw new Error('GeometryType ' + value.type + ' not supported');
+    }
+
+    if (value.crs && value.crs.type && value.crs.type === 'name' && value.crs.properties && value.crs.properties.name) {
+        var crs = value.crs.properties.name;
+
+        if (crs.indexOf('EPSG:') === 0)
+            geometry.srid = parseInt(crs.substring(5));
+        else if (crs.indexOf('urn:ogc:def:crs:EPSG::') === 0)
+            geometry.srid = parseInt(crs.substring(22));
+        else
+            throw new Error('Unsupported crs: ' + crs);
+    }
+
+    return geometry;
+};
+
+Geometry.prototype.toEwkt = function () {
+    return 'SRID=' + this.srid + ';' + this.toWkt();
+};
+
+Geometry.prototype.toEwkb = function () {
+    var ewkb = new BinaryWriter(this._getWkbSize() + 4);
+    var wkb = this.toWkb();
+
+    ewkb.writeInt8(1);
+    ewkb.writeUInt32LE(wkb.slice(1, 5).readUInt32LE(0) | 0x20000000, true);
+    ewkb.writeUInt32LE(this.srid);
+
+    ewkb.writeBuffer(wkb.slice(5));
+
+    return ewkb.buffer;
+};
+
+Geometry.prototype._getWktType = function (wktType, isEmpty) {
+    var wkt = wktType;
+
+    if (this.hasZ && this.hasM)
+        wkt += ' ZM ';
+    else if (this.hasZ)
+        wkt += ' Z ';
+    else if (this.hasM)
+        wkt += ' M ';
+
+    if (isEmpty && !this.hasZ && !this.hasM)
+        wkt += ' ';
+
+    if (isEmpty)
+        wkt += 'EMPTY';
+
+    return wkt;
+};
+
+Geometry.prototype._getWktCoordinate = function (point) {
+    var coordinates = point.x + ' ' + point.y;
+
+    if (this.hasZ)
+        coordinates += ' ' + point.z;
+    if (this.hasM)
+        coordinates += ' ' + point.m;
+
+    return coordinates;
+};
+
+Geometry.prototype._writeWkbType = function (wkb, geometryType, parentOptions) {
+    var dimensionType = 0;
+
+    if (typeof this.srid === 'undefined' && (!parentOptions || typeof parentOptions.srid === 'undefined')) {
+        if (this.hasZ && this.hasM)
+            dimensionType += 3000;
+        else if(this.hasZ)
+            dimensionType += 1000;
+        else if(this.hasM)
+            dimensionType += 2000;
+    }
+    else {
+        if (this.hasZ)
+            dimensionType |= 0x80000000;
+        if (this.hasM)
+            dimensionType |= 0x40000000;
+    }
+
+    wkb.writeUInt32LE(dimensionType + geometryType, true);
+};
+
+Geometry.getTwkbPrecision = function (xyPrecision, zPrecision, mPrecision) {
+    return {
+        xy: xyPrecision,
+        z: zPrecision,
+        m: mPrecision,
+        xyFactor: Math.pow(10, xyPrecision),
+        zFactor: Math.pow(10, zPrecision),
+        mFactor: Math.pow(10, mPrecision)
+    };
+};
+
+Geometry.prototype._writeTwkbHeader = function (twkb, geometryType, precision, isEmpty) {
+    var type = (ZigZag.encode(precision.xy) << 4) + geometryType;
+    var metadataHeader = (this.hasZ || this.hasM) << 3;
+    metadataHeader += isEmpty << 4;
+
+    twkb.writeUInt8(type);
+    twkb.writeUInt8(metadataHeader);
+
+    if (this.hasZ || this.hasM) {
+        var extendedPrecision = 0;
+        if (this.hasZ)
+            extendedPrecision |= 0x1;
+        if (this.hasM)
+            extendedPrecision |= 0x2;
+
+        twkb.writeUInt8(extendedPrecision);
+    }
+};
+
+Geometry.prototype.toGeoJSON = function (options) {
+    var geoJSON = {};
+
+    if (this.srid) {
+        if (options) {
+            if (options.shortCrs) {
+                geoJSON.crs = {
+                    type: 'name',
+                    properties: {
+                        name: 'EPSG:' + this.srid
+                    }
+                };
+            }
+            else if (options.longCrs) {
+                geoJSON.crs = {
+                    type: 'name',
+                    properties: {
+                        name: 'urn:ogc:def:crs:EPSG::' + this.srid
+                    }
+                };
+            }
+        }
+    }
+
+    return geoJSON;
+};
+
+}).call(this,{"isBuffer":require("../../is-buffer/index.js")})
+},{"../../is-buffer/index.js":36,"./binaryreader":145,"./binarywriter":146,"./geometrycollection":148,"./linestring":149,"./multilinestring":150,"./multipoint":151,"./multipolygon":152,"./point":153,"./polygon":154,"./types":155,"./wktparser":156,"./zigzag.js":158}],148:[function(require,module,exports){
+module.exports = GeometryCollection;
+
+var util = require('util');
+
+var Types = require('./types');
+var Geometry = require('./geometry');
+var BinaryWriter = require('./binarywriter');
+
+function GeometryCollection(geometries) {
+    Geometry.call(this);
+
+    this.geometries = geometries || [];
+
+    if (this.geometries.length > 0) {
+        this.hasZ = this.geometries[0].hasZ;
+        this.hasM = this.geometries[0].hasM;
+    }
+}
+
+util.inherits(GeometryCollection, Geometry);
+
+GeometryCollection.Z = function (geometries) {
+    var geometryCollection = new GeometryCollection(geometries);
+    geometryCollection.hasZ = true;
+    return geometryCollection;
+};
+
+GeometryCollection.M = function (geometries) {
+    var geometryCollection = new GeometryCollection(geometries);
+    geometryCollection.hasM = true;
+    return geometryCollection;
+};
+
+GeometryCollection.ZM = function (geometries) {
+    var geometryCollection = new GeometryCollection(geometries);
+    geometryCollection.hasZ = true;
+    geometryCollection.hasM = true;
+    return geometryCollection;
+};
+
+GeometryCollection._parseWkt = function (value, options) {
+    var geometryCollection = new GeometryCollection();
+    geometryCollection.srid = options.srid;
+    geometryCollection.hasZ = options.hasZ;
+    geometryCollection.hasM = options.hasM;
+
+    if (value.isMatch(['EMPTY']))
+        return geometryCollection;
+
+    value.expectGroupStart();
+
+    do {
+        geometryCollection.geometries.push(Geometry.parse(value));
+    } while (value.isMatch([',']));
+
+    value.expectGroupEnd();
+
+    return geometryCollection;
+};
+
+GeometryCollection._parseWkb = function (value, options) {
+    var geometryCollection = new GeometryCollection();
+    geometryCollection.srid = options.srid;
+    geometryCollection.hasZ = options.hasZ;
+    geometryCollection.hasM = options.hasM;
+
+    var geometryCount = value.readUInt32();
+
+    for (var i = 0; i < geometryCount; i++)
+        geometryCollection.geometries.push(Geometry.parse(value, options));
+
+    return geometryCollection;
+};
+
+GeometryCollection._parseTwkb = function (value, options) {
+    var geometryCollection = new GeometryCollection();
+    geometryCollection.hasZ = options.hasZ;
+    geometryCollection.hasM = options.hasM;
+
+    if (options.isEmpty)
+        return geometryCollection;
+
+    var geometryCount = value.readVarInt();
+
+    for (var i = 0; i < geometryCount; i++)
+        geometryCollection.geometries.push(Geometry.parseTwkb(value));
+
+    return geometryCollection;
+};
+
+GeometryCollection._parseGeoJSON = function (value) {
+    var geometryCollection = new GeometryCollection();
+
+    for (var i = 0; i < value.geometries.length; i++)
+        geometryCollection.geometries.push(Geometry.parseGeoJSON(value.geometries[i]));
+
+    if (geometryCollection.geometries.length > 0)
+        geometryCollection.hasZ = geometryCollection.geometries[0].hasZ;
+
+    return geometryCollection;
+};
+
+GeometryCollection.prototype.toWkt = function () {
+    if (this.geometries.length === 0)
+        return this._getWktType(Types.wkt.GeometryCollection, true);
+
+    var wkt = this._getWktType(Types.wkt.GeometryCollection, false) + '(';
+
+    for (var i = 0; i < this.geometries.length; i++)
+        wkt += this.geometries[i].toWkt() + ',';
+
+    wkt = wkt.slice(0, -1);
+    wkt += ')';
+
+    return wkt;
+};
+
+GeometryCollection.prototype.toWkb = function () {
+    var wkb = new BinaryWriter(this._getWkbSize());
+
+    wkb.writeInt8(1);
+
+    this._writeWkbType(wkb, Types.wkb.GeometryCollection);
+    wkb.writeUInt32LE(this.geometries.length);
+
+    for (var i = 0; i < this.geometries.length; i++)
+        wkb.writeBuffer(this.geometries[i].toWkb({ srid: this.srid }));
+
+    return wkb.buffer;
+};
+
+GeometryCollection.prototype.toTwkb = function () {
+    var twkb = new BinaryWriter(0, true);
+
+    var precision = Geometry.getTwkbPrecision(5, 0, 0);
+    var isEmpty = this.geometries.length === 0;
+
+    this._writeTwkbHeader(twkb, Types.wkb.GeometryCollection, precision, isEmpty);
+
+    if (this.geometries.length > 0) {
+        twkb.writeVarInt(this.geometries.length);
+
+        for (var i = 0; i < this.geometries.length; i++)
+            twkb.writeBuffer(this.geometries[i].toTwkb());
+    }
+
+    return twkb.buffer;
+};
+
+GeometryCollection.prototype._getWkbSize = function () {
+    var size = 1 + 4 + 4;
+
+    for (var i = 0; i < this.geometries.length; i++)
+        size += this.geometries[i]._getWkbSize();
+
+    return size;
+};
+
+GeometryCollection.prototype.toGeoJSON = function (options) {
+    var geoJSON = Geometry.prototype.toGeoJSON.call(this, options);
+    geoJSON.type = Types.geoJSON.GeometryCollection;
+    geoJSON.geometries = [];
+
+    for (var i = 0; i < this.geometries.length; i++)
+        geoJSON.geometries.push(this.geometries[i].toGeoJSON());
+
+    return geoJSON;
+};
+
+},{"./binarywriter":146,"./geometry":147,"./types":155,"util":142}],149:[function(require,module,exports){
+module.exports = LineString;
+
+var util = require('util');
+
+var Geometry = require('./geometry');
+var Types = require('./types');
+var Point = require('./point');
+var BinaryWriter = require('./binarywriter');
+
+function LineString(points) {
+    Geometry.call(this);
+
+    this.points = points || [];
+
+    if (this.points.length > 0) {
+        this.hasZ = this.points[0].hasZ;
+        this.hasM = this.points[0].hasM;
+    }
+}
+
+util.inherits(LineString, Geometry);
+
+LineString.Z = function (points) {
+    var lineString = new LineString(points);
+    lineString.hasZ = true;
+    return lineString;
+};
+
+LineString.M = function (points) {
+    var lineString = new LineString(points);
+    lineString.hasM = true;
+    return lineString;
+};
+
+LineString.ZM = function (points) {
+    var lineString = new LineString(points);
+    lineString.hasZ = true;
+    lineString.hasM = true;
+    return lineString;
+};
+
+LineString._parseWkt = function (value, options) {
+    var lineString = new LineString();
+    lineString.srid = options.srid;
+    lineString.hasZ = options.hasZ;
+    lineString.hasM = options.hasM;
+
+    if (value.isMatch(['EMPTY']))
+        return lineString;
+
+    value.expectGroupStart();
+    lineString.points.push.apply(lineString.points, value.matchCoordinates(options));
+    value.expectGroupEnd();
+
+    return lineString;
+};
+
+LineString._parseWkb = function (value, options) {
+    var lineString = new LineString();
+    lineString.srid = options.srid;
+    lineString.hasZ = options.hasZ;
+    lineString.hasM = options.hasM;
+
+    var pointCount = value.readUInt32();
+
+    for (var i = 0; i < pointCount; i++)
+        lineString.points.push(Point._readWkbPoint(value, options));
+
+    return lineString;
+};
+
+LineString._parseTwkb = function (value, options) {
+    var lineString = new LineString();
+    lineString.hasZ = options.hasZ;
+    lineString.hasM = options.hasM;
+
+    if (options.isEmpty)
+        return lineString;
+
+    var previousPoint = new Point(0, 0, options.hasZ ? 0 : undefined, options.hasM ? 0 : undefined);
+    var pointCount = value.readVarInt();
+
+    for (var i = 0; i < pointCount; i++)
+        lineString.points.push(Point._readTwkbPoint(value, options, previousPoint));
+
+    return lineString;
+};
+
+LineString._parseGeoJSON = function (value) {
+    var lineString = new LineString();
+
+    if (value.coordinates.length > 0)
+        lineString.hasZ = value.coordinates[0].length > 2;
+
+    for (var i = 0; i < value.coordinates.length; i++)
+        lineString.points.push(Point._readGeoJSONPoint(value.coordinates[i]));
+
+    return lineString;
+};
+
+LineString.prototype.toWkt = function () {
+    if (this.points.length === 0)
+        return this._getWktType(Types.wkt.LineString, true);
+
+    return this._getWktType(Types.wkt.LineString, false) + this._toInnerWkt();
+};
+
+LineString.prototype._toInnerWkt = function () {
+    var innerWkt = '(';
+
+    for (var i = 0; i < this.points.length; i++)
+        innerWkt += this._getWktCoordinate(this.points[i]) + ',';
+
+    innerWkt = innerWkt.slice(0, -1);
+    innerWkt += ')';
+
+    return innerWkt;
+};
+
+LineString.prototype.toWkb = function (parentOptions) {
+    var wkb = new BinaryWriter(this._getWkbSize());
+
+    wkb.writeInt8(1);
+
+    this._writeWkbType(wkb, Types.wkb.LineString, parentOptions);
+    wkb.writeUInt32LE(this.points.length);
+
+    for (var i = 0; i < this.points.length; i++)
+        this.points[i]._writeWkbPoint(wkb);
+
+    return wkb.buffer;
+};
+
+LineString.prototype.toTwkb = function () {
+    var twkb = new BinaryWriter(0, true);
+
+    var precision = Geometry.getTwkbPrecision(5, 0, 0);
+    var isEmpty = this.points.length === 0;
+
+    this._writeTwkbHeader(twkb, Types.wkb.LineString, precision, isEmpty);
+
+    if (this.points.length > 0) {
+        twkb.writeVarInt(this.points.length);
+
+        var previousPoint = new Point(0, 0, 0, 0);
+        for (var i = 0; i < this.points.length; i++)
+            this.points[i]._writeTwkbPoint(twkb, precision, previousPoint);
+    }
+
+    return twkb.buffer;
+};
+
+LineString.prototype._getWkbSize = function () {
+    var coordinateSize = 16;
+
+    if (this.hasZ)
+        coordinateSize += 8;
+    if (this.hasM)
+        coordinateSize += 8;
+
+    return 1 + 4 + 4 + (this.points.length * coordinateSize);
+};
+
+LineString.prototype.toGeoJSON = function (options) {
+    var geoJSON = Geometry.prototype.toGeoJSON.call(this, options);
+    geoJSON.type = Types.geoJSON.LineString;
+    geoJSON.coordinates = [];
+
+    for (var i = 0; i < this.points.length; i++) {
+        if (this.hasZ)
+            geoJSON.coordinates.push([this.points[i].x, this.points[i].y, this.points[i].z]);
+        else
+            geoJSON.coordinates.push([this.points[i].x, this.points[i].y]);
+    }
+
+    return geoJSON;
+};
+
+},{"./binarywriter":146,"./geometry":147,"./point":153,"./types":155,"util":142}],150:[function(require,module,exports){
+module.exports = MultiLineString;
+
+var util = require('util');
+
+var Types = require('./types');
+var Geometry = require('./geometry');
+var Point = require('./point');
+var LineString = require('./linestring');
+var BinaryWriter = require('./binarywriter');
+
+function MultiLineString(lineStrings) {
+    Geometry.call(this);
+
+    this.lineStrings = lineStrings || [];
+
+    if (this.lineStrings.length > 0) {
+        this.hasZ = this.lineStrings[0].hasZ;
+        this.hasM = this.lineStrings[0].hasM;
+    }
+}
+
+util.inherits(MultiLineString, Geometry);
+
+MultiLineString.Z = function (lineStrings) {
+    var multiLineString = new MultiLineString(lineStrings);
+    multiLineString.hasZ = true;
+    return multiLineString;
+};
+
+MultiLineString.M = function (lineStrings) {
+    var multiLineString = new MultiLineString(lineStrings);
+    multiLineString.hasM = true;
+    return multiLineString;
+};
+
+MultiLineString.ZM = function (lineStrings) {
+    var multiLineString = new MultiLineString(lineStrings);
+    multiLineString.hasZ = true;
+    multiLineString.hasM = true;
+    return multiLineString;
+};
+
+MultiLineString._parseWkt = function (value, options) {
+    var multiLineString = new MultiLineString();
+    multiLineString.srid = options.srid;
+    multiLineString.hasZ = options.hasZ;
+    multiLineString.hasM = options.hasM;
+
+    if (value.isMatch(['EMPTY']))
+        return multiLineString;
+
+    value.expectGroupStart();
+
+    do {
+        value.expectGroupStart();
+        multiLineString.lineStrings.push(new LineString(value.matchCoordinates(options)));
+        value.expectGroupEnd();
+    } while (value.isMatch([',']));
+
+    value.expectGroupEnd();
+
+    return multiLineString;
+};
+
+MultiLineString._parseWkb = function (value, options) {
+    var multiLineString = new MultiLineString();
+    multiLineString.srid = options.srid;
+    multiLineString.hasZ = options.hasZ;
+    multiLineString.hasM = options.hasM;
+
+    var lineStringCount = value.readUInt32();
+
+    for (var i = 0; i < lineStringCount; i++)
+        multiLineString.lineStrings.push(Geometry.parse(value, options));
+
+    return multiLineString;
+};
+
+MultiLineString._parseTwkb = function (value, options) {
+    var multiLineString = new MultiLineString();
+    multiLineString.hasZ = options.hasZ;
+    multiLineString.hasM = options.hasM;
+
+    if (options.isEmpty)
+        return multiLineString;
+
+    var previousPoint = new Point(0, 0, options.hasZ ? 0 : undefined, options.hasM ? 0 : undefined);
+    var lineStringCount = value.readVarInt();
+
+    for (var i = 0; i < lineStringCount; i++) {
+        var lineString = new LineString();
+        lineString.hasZ = options.hasZ;
+        lineString.hasM = options.hasM;
+
+        var pointCount = value.readVarInt();
+
+        for (var j = 0; j < pointCount; j++)
+            lineString.points.push(Point._readTwkbPoint(value, options, previousPoint));
+
+        multiLineString.lineStrings.push(lineString);
+    }
+
+    return multiLineString;
+};
+
+MultiLineString._parseGeoJSON = function (value) {
+    var multiLineString = new MultiLineString();
+
+    if (value.coordinates.length > 0 && value.coordinates[0].length > 0)
+        multiLineString.hasZ = value.coordinates[0][0].length > 2;
+
+    for (var i = 0; i < value.coordinates.length; i++)
+        multiLineString.lineStrings.push(LineString._parseGeoJSON({ coordinates: value.coordinates[i] }));
+
+    return multiLineString;
+};
+
+MultiLineString.prototype.toWkt = function () {
+    if (this.lineStrings.length === 0)
+        return this._getWktType(Types.wkt.MultiLineString, true);
+
+    var wkt = this._getWktType(Types.wkt.MultiLineString, false) + '(';
+
+    for (var i = 0; i < this.lineStrings.length; i++)
+        wkt += this.lineStrings[i]._toInnerWkt() + ',';
+
+    wkt = wkt.slice(0, -1);
+    wkt += ')';
+
+    return wkt;
+};
+
+MultiLineString.prototype.toWkb = function () {
+    var wkb = new BinaryWriter(this._getWkbSize());
+
+    wkb.writeInt8(1);
+
+    this._writeWkbType(wkb, Types.wkb.MultiLineString);
+    wkb.writeUInt32LE(this.lineStrings.length);
+
+    for (var i = 0; i < this.lineStrings.length; i++)
+        wkb.writeBuffer(this.lineStrings[i].toWkb({ srid: this.srid }));
+
+    return wkb.buffer;
+};
+
+MultiLineString.prototype.toTwkb = function () {
+    var twkb = new BinaryWriter(0, true);
+
+    var precision = Geometry.getTwkbPrecision(5, 0, 0);
+    var isEmpty = this.lineStrings.length === 0;
+
+    this._writeTwkbHeader(twkb, Types.wkb.MultiLineString, precision, isEmpty);
+
+    if (this.lineStrings.length > 0) {
+        twkb.writeVarInt(this.lineStrings.length);
+
+        var previousPoint = new Point(0, 0, 0, 0);
+        for (var i = 0; i < this.lineStrings.length; i++) {
+            twkb.writeVarInt(this.lineStrings[i].points.length);
+
+            for (var j = 0; j < this.lineStrings[i].points.length; j++)
+                this.lineStrings[i].points[j]._writeTwkbPoint(twkb, precision, previousPoint);
+        }
+    }
+
+    return twkb.buffer;
+};
+
+MultiLineString.prototype._getWkbSize = function () {
+    var size = 1 + 4 + 4;
+
+    for (var i = 0; i < this.lineStrings.length; i++)
+        size += this.lineStrings[i]._getWkbSize();
+
+    return size;
+};
+
+MultiLineString.prototype.toGeoJSON = function (options) {
+    var geoJSON = Geometry.prototype.toGeoJSON.call(this, options);
+    geoJSON.type = Types.geoJSON.MultiLineString;
+    geoJSON.coordinates = [];
+
+    for (var i = 0; i < this.lineStrings.length; i++)
+        geoJSON.coordinates.push(this.lineStrings[i].toGeoJSON().coordinates);
+
+    return geoJSON;
+};
+
+},{"./binarywriter":146,"./geometry":147,"./linestring":149,"./point":153,"./types":155,"util":142}],151:[function(require,module,exports){
+module.exports = MultiPoint;
+
+var util = require('util');
+
+var Types = require('./types');
+var Geometry = require('./geometry');
+var Point = require('./point');
+var BinaryWriter = require('./binarywriter');
+
+function MultiPoint(points) {
+    Geometry.call(this);
+
+    this.points = points || [];
+
+    if (this.points.length > 0) {
+        this.hasZ = this.points[0].hasZ;
+        this.hasM = this.points[0].hasM;
+    }
+}
+
+util.inherits(MultiPoint, Geometry);
+
+MultiPoint.Z = function (points) {
+    var multiPoint = new MultiPoint(points);
+    multiPoint.hasZ = true;
+    return multiPoint;
+};
+
+MultiPoint.M = function (points) {
+    var multiPoint = new MultiPoint(points);
+    multiPoint.hasM = true;
+    return multiPoint;
+};
+
+MultiPoint.ZM = function (points) {
+    var multiPoint = new MultiPoint(points);
+    multiPoint.hasZ = true;
+    multiPoint.hasM = true;
+    return multiPoint;
+};
+
+MultiPoint._parseWkt = function (value, options) {
+    var multiPoint = new MultiPoint();
+    multiPoint.srid = options.srid;
+    multiPoint.hasZ = options.hasZ;
+    multiPoint.hasM = options.hasM;
+
+    if (value.isMatch(['EMPTY']))
+        return multiPoint;
+
+    value.expectGroupStart();
+    multiPoint.points.push.apply(multiPoint.points, value.matchCoordinates(options));
+    value.expectGroupEnd();
+
+    return multiPoint;
+};
+
+MultiPoint._parseWkb = function (value, options) {
+    var multiPoint = new MultiPoint();
+    multiPoint.srid = options.srid;
+    multiPoint.hasZ = options.hasZ;
+    multiPoint.hasM = options.hasM;
+
+    var pointCount = value.readUInt32();
+
+    for (var i = 0; i < pointCount; i++)
+        multiPoint.points.push(Geometry.parse(value, options));
+
+    return multiPoint;
+};
+
+MultiPoint._parseTwkb = function (value, options) {
+    var multiPoint = new MultiPoint();
+    multiPoint.hasZ = options.hasZ;
+    multiPoint.hasM = options.hasM;
+
+    if (options.isEmpty)
+        return multiPoint;
+
+    var previousPoint = new Point(0, 0, options.hasZ ? 0 : undefined, options.hasM ? 0 : undefined);
+    var pointCount = value.readVarInt();
+
+    for (var i = 0; i < pointCount; i++)
+        multiPoint.points.push(Point._readTwkbPoint(value, options, previousPoint));
+
+    return multiPoint;
+};
+
+MultiPoint._parseGeoJSON = function (value) {
+    var multiPoint = new MultiPoint();
+
+    if (value.coordinates.length > 0)
+        multiPoint.hasZ = value.coordinates[0].length > 2;
+
+    for (var i = 0; i < value.coordinates.length; i++)
+        multiPoint.points.push(Point._parseGeoJSON({ coordinates: value.coordinates[i] }));
+
+    return multiPoint;
+};
+
+MultiPoint.prototype.toWkt = function () {
+    if (this.points.length === 0)
+        return this._getWktType(Types.wkt.MultiPoint, true);
+
+    var wkt = this._getWktType(Types.wkt.MultiPoint, false) + '(';
+
+    for (var i = 0; i < this.points.length; i++)
+        wkt += this._getWktCoordinate(this.points[i]) + ',';
+
+    wkt = wkt.slice(0, -1);
+    wkt += ')';
+
+    return wkt;
+};
+
+MultiPoint.prototype.toWkb = function () {
+    var wkb = new BinaryWriter(this._getWkbSize());
+
+    wkb.writeInt8(1);
+
+    this._writeWkbType(wkb, Types.wkb.MultiPoint);
+    wkb.writeUInt32LE(this.points.length);
+
+    for (var i = 0; i < this.points.length; i++)
+        wkb.writeBuffer(this.points[i].toWkb({ srid: this.srid }));
+
+    return wkb.buffer;
+};
+
+MultiPoint.prototype.toTwkb = function () {
+    var twkb = new BinaryWriter(0, true);
+
+    var precision = Geometry.getTwkbPrecision(5, 0, 0);
+    var isEmpty = this.points.length === 0;
+
+    this._writeTwkbHeader(twkb, Types.wkb.MultiPoint, precision, isEmpty);
+
+    if (this.points.length > 0) {
+        twkb.writeVarInt(this.points.length);
+
+        var previousPoint = new Point(0, 0, 0, 0);
+        for (var i = 0; i < this.points.length; i++)
+            this.points[i]._writeTwkbPoint(twkb, precision, previousPoint);
+    }
+
+    return twkb.buffer;
+};
+
+MultiPoint.prototype._getWkbSize = function () {
+    var coordinateSize = 16;
+
+    if (this.hasZ)
+        coordinateSize += 8;
+    if (this.hasM)
+        coordinateSize += 8;
+
+    coordinateSize += 5;
+
+    return 1 + 4 + 4 + (this.points.length * coordinateSize);
+};
+
+MultiPoint.prototype.toGeoJSON = function (options) {
+    var geoJSON = Geometry.prototype.toGeoJSON.call(this, options);
+    geoJSON.type = Types.geoJSON.MultiPoint;
+    geoJSON.coordinates = [];
+
+    for (var i = 0; i < this.points.length; i++)
+        geoJSON.coordinates.push(this.points[i].toGeoJSON().coordinates);
+
+    return geoJSON;
+};
+
+},{"./binarywriter":146,"./geometry":147,"./point":153,"./types":155,"util":142}],152:[function(require,module,exports){
+module.exports = MultiPolygon;
+
+var util = require('util');
+
+var Types = require('./types');
+var Geometry = require('./geometry');
+var Point = require('./point');
+var Polygon = require('./polygon');
+var BinaryWriter = require('./binarywriter');
+
+function MultiPolygon(polygons) {
+    Geometry.call(this);
+
+    this.polygons = polygons || [];
+
+    if (this.polygons.length > 0) {
+        this.hasZ = this.polygons[0].hasZ;
+        this.hasM = this.polygons[0].hasM;
+    }
+}
+
+util.inherits(MultiPolygon, Geometry);
+
+MultiPolygon.Z = function (polygons) {
+    var multiPolygon = new MultiPolygon(polygons);
+    multiPolygon.hasZ = true;
+    return multiPolygon;
+};
+
+MultiPolygon.M = function (polygons) {
+    var multiPolygon = new MultiPolygon(polygons);
+    multiPolygon.hasM = true;
+    return multiPolygon;
+};
+
+MultiPolygon.ZM = function (polygons) {
+    var multiPolygon = new MultiPolygon(polygons);
+    multiPolygon.hasZ = true;
+    multiPolygon.hasM = true;
+    return multiPolygon;
+};
+
+MultiPolygon._parseWkt = function (value, options) {
+    var multiPolygon = new MultiPolygon();
+    multiPolygon.srid = options.srid;
+    multiPolygon.hasZ = options.hasZ;
+    multiPolygon.hasM = options.hasM;
+
+    if (value.isMatch(['EMPTY']))
+        return multiPolygon;
+
+    value.expectGroupStart();
+
+    do {
+        value.expectGroupStart();
+
+        var exteriorRing = [];
+        var interiorRings = [];
+
+        value.expectGroupStart();
+        exteriorRing.push.apply(exteriorRing, value.matchCoordinates(options));
+        value.expectGroupEnd();
+
+        while (value.isMatch([','])) {
+            value.expectGroupStart();
+            interiorRings.push(value.matchCoordinates(options));
+            value.expectGroupEnd();
+        }
+
+        multiPolygon.polygons.push(new Polygon(exteriorRing, interiorRings));
+
+        value.expectGroupEnd();
+
+    } while (value.isMatch([',']));
+
+    value.expectGroupEnd();
+
+    return multiPolygon;
+};
+
+MultiPolygon._parseWkb = function (value, options) {
+    var multiPolygon = new MultiPolygon();
+    multiPolygon.srid = options.srid;
+    multiPolygon.hasZ = options.hasZ;
+    multiPolygon.hasM = options.hasM;
+
+    var polygonCount = value.readUInt32();
+
+    for (var i = 0; i < polygonCount; i++)
+        multiPolygon.polygons.push(Geometry.parse(value, options));
+
+    return multiPolygon;
+};
+
+MultiPolygon._parseTwkb = function (value, options) {
+    var multiPolygon = new MultiPolygon();
+    multiPolygon.hasZ = options.hasZ;
+    multiPolygon.hasM = options.hasM;
+
+    if (options.isEmpty)
+        return multiPolygon;
+
+    var previousPoint = new Point(0, 0, options.hasZ ? 0 : undefined, options.hasM ? 0 : undefined);
+    var polygonCount = value.readVarInt();
+
+    for (var i = 0; i < polygonCount; i++) {
+        var polygon = new Polygon();
+        polygon.hasZ = options.hasZ;
+        polygon.hasM = options.hasM;
+
+        var ringCount = value.readVarInt();
+        var exteriorRingCount = value.readVarInt();
+
+        for (var j = 0; j < exteriorRingCount; j++)
+            polygon.exteriorRing.push(Point._readTwkbPoint(value, options, previousPoint));
+
+        for (j = 1; j < ringCount; j++) {
+            var interiorRing = [];
+
+            var interiorRingCount = value.readVarInt();
+
+            for (var k = 0; k < interiorRingCount; k++)
+                interiorRing.push(Point._readTwkbPoint(value, options, previousPoint));
+
+            polygon.interiorRings.push(interiorRing);
+        }
+
+        multiPolygon.polygons.push(polygon);
+    }
+
+    return multiPolygon;
+};
+
+MultiPolygon._parseGeoJSON = function (value) {
+    var multiPolygon = new MultiPolygon();
+
+    if (value.coordinates.length > 0 && value.coordinates[0].length > 0 && value.coordinates[0][0].length > 0)
+        multiPolygon.hasZ = value.coordinates[0][0][0].length > 2;
+
+    for (var i = 0; i < value.coordinates.length; i++)
+        multiPolygon.polygons.push(Polygon._parseGeoJSON({ coordinates: value.coordinates[i] }));
+
+    return multiPolygon;
+};
+
+MultiPolygon.prototype.toWkt = function () {
+    if (this.polygons.length === 0)
+        return this._getWktType(Types.wkt.MultiPolygon, true);
+
+    var wkt = this._getWktType(Types.wkt.MultiPolygon, false) + '(';
+
+    for (var i = 0; i < this.polygons.length; i++)
+        wkt += this.polygons[i]._toInnerWkt() + ',';
+
+    wkt = wkt.slice(0, -1);
+    wkt += ')';
+
+    return wkt;
+};
+
+MultiPolygon.prototype.toWkb = function () {
+    var wkb = new BinaryWriter(this._getWkbSize());
+
+    wkb.writeInt8(1);
+
+    this._writeWkbType(wkb, Types.wkb.MultiPolygon);
+    wkb.writeUInt32LE(this.polygons.length);
+
+    for (var i = 0; i < this.polygons.length; i++)
+        wkb.writeBuffer(this.polygons[i].toWkb({ srid: this.srid }));
+
+    return wkb.buffer;
+};
+
+MultiPolygon.prototype.toTwkb = function () {
+    var twkb = new BinaryWriter(0, true);
+
+    var precision = Geometry.getTwkbPrecision(5, 0, 0);
+    var isEmpty = this.polygons.length === 0;
+
+    this._writeTwkbHeader(twkb, Types.wkb.MultiPolygon, precision, isEmpty);
+
+    if (this.polygons.length > 0) {
+        twkb.writeVarInt(this.polygons.length);
+
+        var previousPoint = new Point(0, 0, 0, 0);
+        for (var i = 0; i < this.polygons.length; i++) {
+            twkb.writeVarInt(1 + this.polygons[i].interiorRings.length);
+
+            twkb.writeVarInt(this.polygons[i].exteriorRing.length);
+
+            for (var j = 0; j < this.polygons[i].exteriorRing.length; j++)
+                this.polygons[i].exteriorRing[j]._writeTwkbPoint(twkb, precision, previousPoint);
+
+            for (j = 0; j < this.polygons[i].interiorRings.length; j++) {
+                twkb.writeVarInt(this.polygons[i].interiorRings[j].length);
+
+                for (var k = 0; k < this.polygons[i].interiorRings[j].length; k++)
+                    this.polygons[i].interiorRings[j][k]._writeTwkbPoint(twkb, precision, previousPoint);
+            }
+        }
+    }
+
+    return twkb.buffer;
+};
+
+MultiPolygon.prototype._getWkbSize = function () {
+    var size = 1 + 4 + 4;
+
+    for (var i = 0; i < this.polygons.length; i++)
+        size += this.polygons[i]._getWkbSize();
+
+    return size;
+};
+
+MultiPolygon.prototype.toGeoJSON = function (options) {
+    var geoJSON = Geometry.prototype.toGeoJSON.call(this, options);
+    geoJSON.type = Types.geoJSON.MultiPolygon;
+    geoJSON.coordinates = [];
+
+    for (var i = 0; i < this.polygons.length; i++)
+        geoJSON.coordinates.push(this.polygons[i].toGeoJSON().coordinates);
+
+    return geoJSON;
+};
+
+},{"./binarywriter":146,"./geometry":147,"./point":153,"./polygon":154,"./types":155,"util":142}],153:[function(require,module,exports){
+module.exports = Point;
+
+var util = require('util');
+
+var Geometry = require('./geometry');
+var Types = require('./types');
+var BinaryWriter = require('./binarywriter');
+var ZigZag = require('./zigzag.js');
+
+function Point(x, y, z, m) {
+    Geometry.call(this);
+
+    this.x = x;
+    this.y = y;
+    this.z = z;
+    this.m = m;
+
+    this.hasZ = typeof this.z !== 'undefined';
+    this.hasM = typeof this.m !== 'undefined';
+}
+
+util.inherits(Point, Geometry);
+
+Point.Z = function (x, y, z) {
+    var point = new Point(x, y, z);
+    point.hasZ = true;
+    return point;
+};
+
+Point.M = function (x, y, m) {
+    var point = new Point(x, y, undefined, m);
+    point.hasM = true;
+    return point;
+};
+
+Point.ZM = function (x, y, z, m) {
+    var point = new Point(x, y, z, m);
+    point.hasZ = true;
+    point.hasM = true;
+    return point;
+};
+
+Point._parseWkt = function (value, options) {
+    var point = new Point();
+    point.srid = options.srid;
+    point.hasZ = options.hasZ;
+    point.hasM = options.hasM;
+
+    if (value.isMatch(['EMPTY']))
+        return point;
+
+    value.expectGroupStart();
+
+    var coordinate = value.matchCoordinate(options);
+
+    point.x = coordinate.x;
+    point.y = coordinate.y;
+    point.z = coordinate.z;
+    point.m = coordinate.m;
+
+    value.expectGroupEnd();
+
+    return point;
+};
+
+Point._parseWkb = function (value, options) {
+    var point = Point._readWkbPoint(value, options);
+    point.srid = options.srid;
+    return point;
+};
+
+Point._readWkbPoint = function (value, options) {
+    return new Point(value.readDouble(), value.readDouble(),
+        options.hasZ ? value.readDouble() : undefined,
+        options.hasM ? value.readDouble() : undefined);
+};
+
+Point._parseTwkb = function (value, options) {
+    var point = new Point();
+    point.hasZ = options.hasZ;
+    point.hasM = options.hasM;
+
+    if (options.isEmpty)
+        return point;
+
+    point.x = ZigZag.decode(value.readVarInt()) / options.precisionFactor;
+    point.y = ZigZag.decode(value.readVarInt()) / options.precisionFactor;
+    point.z = options.hasZ ? ZigZag.decode(value.readVarInt()) / options.zPrecisionFactor : undefined;
+    point.m = options.hasM ? ZigZag.decode(value.readVarInt()) / options.mPrecisionFactor : undefined;
+
+    return point;
+};
+
+Point._readTwkbPoint = function (value, options, previousPoint) {
+    previousPoint.x += ZigZag.decode(value.readVarInt()) / options.precisionFactor;
+    previousPoint.y += ZigZag.decode(value.readVarInt()) / options.precisionFactor;
+
+    if (options.hasZ)
+        previousPoint.z += ZigZag.decode(value.readVarInt()) / options.zPrecisionFactor;
+    if (options.hasM)
+        previousPoint.m += ZigZag.decode(value.readVarInt()) / options.mPrecisionFactor;
+
+    return new Point(previousPoint.x, previousPoint.y, previousPoint.z, previousPoint.m);
+};
+
+Point._parseGeoJSON = function (value) {
+    return Point._readGeoJSONPoint(value.coordinates);
+};
+
+Point._readGeoJSONPoint = function (coordinates) {
+    if (coordinates.length === 0)
+        return new Point();
+
+    if (coordinates.length > 2)
+        return new Point(coordinates[0], coordinates[1], coordinates[2]);
+
+    return new Point(coordinates[0], coordinates[1]);
+};
+
+Point.prototype.toWkt = function () {
+    if (typeof this.x === 'undefined' && typeof this.y === 'undefined' &&
+        typeof this.z === 'undefined' && typeof this.m === 'undefined')
+        return this._getWktType(Types.wkt.Point, true);
+
+    return this._getWktType(Types.wkt.Point, false) + '(' + this._getWktCoordinate(this) + ')';
+};
+
+Point.prototype.toWkb = function (parentOptions) {
+    var wkb = new BinaryWriter(this._getWkbSize());
+
+    wkb.writeInt8(1);
+    this._writeWkbType(wkb, Types.wkb.Point, parentOptions);
+
+    if (typeof this.x === 'undefined' && typeof this.y === 'undefined') {
+        wkb.writeDoubleLE(NaN);
+        wkb.writeDoubleLE(NaN);
+
+        if (this.hasZ)
+            wkb.writeDoubleLE(NaN);
+        if (this.hasM)
+            wkb.writeDoubleLE(NaN);
+    }
+    else {
+        this._writeWkbPoint(wkb);
+    }
+
+    return wkb.buffer;
+};
+
+Point.prototype._writeWkbPoint = function (wkb) {
+    wkb.writeDoubleLE(this.x);
+    wkb.writeDoubleLE(this.y);
+
+    if (this.hasZ)
+        wkb.writeDoubleLE(this.z);
+    if (this.hasM)
+        wkb.writeDoubleLE(this.m);
+};
+
+Point.prototype.toTwkb = function () {
+    var twkb = new BinaryWriter(0, true);
+
+    var precision = Geometry.getTwkbPrecision(5, 0, 0);
+    var isEmpty = typeof this.x === 'undefined' && typeof this.y === 'undefined';
+
+    this._writeTwkbHeader(twkb, Types.wkb.Point, precision, isEmpty);
+
+    if (!isEmpty)
+        this._writeTwkbPoint(twkb, precision, new Point(0, 0, 0, 0));
+
+    return twkb.buffer;
+};
+
+Point.prototype._writeTwkbPoint = function (twkb, precision, previousPoint) {
+    var x = this.x * precision.xyFactor;
+    var y = this.y * precision.xyFactor;
+    var z = this.z * precision.zFactor;
+    var m = this.m * precision.mFactor;
+
+    twkb.writeVarInt(ZigZag.encode(x - previousPoint.x));
+    twkb.writeVarInt(ZigZag.encode(y - previousPoint.y));
+    if (this.hasZ)
+        twkb.writeVarInt(ZigZag.encode(z - previousPoint.z));
+    if (this.hasM)
+        twkb.writeVarInt(ZigZag.encode(m - previousPoint.m));
+
+    previousPoint.x = x;
+    previousPoint.y = y;
+    previousPoint.z = z;
+    previousPoint.m = m;
+};
+
+Point.prototype._getWkbSize = function () {
+    var size = 1 + 4 + 8 + 8;
+
+    if (this.hasZ)
+        size += 8;
+    if (this.hasM)
+        size += 8;
+
+    return size;
+};
+
+Point.prototype.toGeoJSON = function (options) {
+    var geoJSON = Geometry.prototype.toGeoJSON.call(this, options);
+    geoJSON.type = Types.geoJSON.Point;
+
+    if (typeof this.x === 'undefined' && typeof this.y === 'undefined')
+        geoJSON.coordinates = [];
+    else if (typeof this.z !== 'undefined')
+        geoJSON.coordinates = [this.x, this.y, this.z];
+    else
+        geoJSON.coordinates = [this.x, this.y];
+
+    return geoJSON;
+};
+
+},{"./binarywriter":146,"./geometry":147,"./types":155,"./zigzag.js":158,"util":142}],154:[function(require,module,exports){
+module.exports = Polygon;
+
+var util = require('util');
+
+var Geometry = require('./geometry');
+var Types = require('./types');
+var Point = require('./point');
+var BinaryWriter = require('./binarywriter');
+
+function Polygon(exteriorRing, interiorRings) {
+    Geometry.call(this);
+
+    this.exteriorRing = exteriorRing || [];
+    this.interiorRings = interiorRings || [];
+
+    if (this.exteriorRing.length > 0) {
+        this.hasZ = this.exteriorRing[0].hasZ;
+        this.hasM = this.exteriorRing[0].hasM;
+    }
+}
+
+util.inherits(Polygon, Geometry);
+
+Polygon.Z = function (exteriorRing, interiorRings) {
+    var polygon = new Polygon(exteriorRing, interiorRings);
+    polygon.hasZ = true;
+    return polygon;
+};
+
+Polygon.M = function (exteriorRing, interiorRings) {
+    var polygon = new Polygon(exteriorRing, interiorRings);
+    polygon.hasM = true;
+    return polygon;
+};
+
+Polygon.ZM = function (exteriorRing, interiorRings) {
+    var polygon = new Polygon(exteriorRing, interiorRings);
+    polygon.hasZ = true;
+    polygon.hasM = true;
+    return polygon;
+};
+
+Polygon._parseWkt = function (value, options) {
+    var polygon = new Polygon();
+    polygon.srid = options.srid;
+    polygon.hasZ = options.hasZ;
+    polygon.hasM = options.hasM;
+
+    if (value.isMatch(['EMPTY']))
+        return polygon;
+
+    value.expectGroupStart();
+
+    value.expectGroupStart();
+    polygon.exteriorRing.push.apply(polygon.exteriorRing, value.matchCoordinates(options));
+    value.expectGroupEnd();
+
+    while (value.isMatch([','])) {
+        value.expectGroupStart();
+        polygon.interiorRings.push(value.matchCoordinates(options));
+        value.expectGroupEnd();
+    }
+
+    value.expectGroupEnd();
+
+    return polygon;
+};
+
+Polygon._parseWkb = function (value, options) {
+    var polygon = new Polygon();
+    polygon.srid = options.srid;
+    polygon.hasZ = options.hasZ;
+    polygon.hasM = options.hasM;
+
+    var ringCount = value.readUInt32();
+
+    if (ringCount > 0) {
+        var exteriorRingCount = value.readUInt32();
+
+        for (var i = 0; i < exteriorRingCount; i++)
+            polygon.exteriorRing.push(Point._readWkbPoint(value, options));
+
+        for (i = 1; i < ringCount; i++) {
+            var interiorRing = [];
+
+            var interiorRingCount = value.readUInt32();
+
+            for (var j = 0; j < interiorRingCount; j++)
+                interiorRing.push(Point._readWkbPoint(value, options));
+
+            polygon.interiorRings.push(interiorRing);
+        }
+    }
+
+    return polygon;
+};
+
+Polygon._parseTwkb = function (value, options) {
+    var polygon = new Polygon();
+    polygon.hasZ = options.hasZ;
+    polygon.hasM = options.hasM;
+
+    if (options.isEmpty)
+        return polygon;
+
+    var previousPoint = new Point(0, 0, options.hasZ ? 0 : undefined, options.hasM ? 0 : undefined);
+    var ringCount = value.readVarInt();
+    var exteriorRingCount = value.readVarInt();
+
+    for (var i = 0; i < exteriorRingCount; i++)
+        polygon.exteriorRing.push(Point._readTwkbPoint(value, options, previousPoint));
+
+    for (i = 1; i < ringCount; i++) {
+        var interiorRing = [];
+
+        var interiorRingCount = value.readVarInt();
+
+        for (var j = 0; j < interiorRingCount; j++)
+            interiorRing.push(Point._readTwkbPoint(value, options, previousPoint));
+
+        polygon.interiorRings.push(interiorRing);
+    }
+
+    return polygon;
+};
+
+Polygon._parseGeoJSON = function (value) {
+    var polygon = new Polygon();
+
+    if (value.coordinates.length > 0 && value.coordinates[0].length > 0)
+        polygon.hasZ = value.coordinates[0][0].length > 2;
+
+    for (var i = 0; i < value.coordinates.length; i++) {
+        if (i > 0)
+            polygon.interiorRings.push([]);
+
+        for (var j = 0; j  < value.coordinates[i].length; j++) {
+            if (i === 0)
+                polygon.exteriorRing.push(Point._readGeoJSONPoint(value.coordinates[i][j]));
+            else
+                polygon.interiorRings[i - 1].push(Point._readGeoJSONPoint(value.coordinates[i][j]));
+        }
+    }
+
+    return polygon;
+};
+
+Polygon.prototype.toWkt = function () {
+    if (this.exteriorRing.length === 0)
+        return this._getWktType(Types.wkt.Polygon, true);
+
+    return this._getWktType(Types.wkt.Polygon, false) + this._toInnerWkt();
+};
+
+Polygon.prototype._toInnerWkt = function () {
+    var innerWkt = '((';
+
+    for (var i = 0; i < this.exteriorRing.length; i++)
+        innerWkt += this._getWktCoordinate(this.exteriorRing[i]) + ',';
+
+    innerWkt = innerWkt.slice(0, -1);
+    innerWkt += ')';
+
+    for (i = 0; i < this.interiorRings.length; i++) {
+        innerWkt += ',(';
+
+        for (var j = 0; j < this.interiorRings[i].length; j++) {
+            innerWkt += this._getWktCoordinate(this.interiorRings[i][j]) + ',';
+        }
+
+        innerWkt = innerWkt.slice(0, -1);
+        innerWkt += ')';
+    }
+
+    innerWkt += ')';
+
+    return innerWkt;
+};
+
+Polygon.prototype.toWkb = function (parentOptions) {
+    var wkb = new BinaryWriter(this._getWkbSize());
+
+    wkb.writeInt8(1);
+
+    this._writeWkbType(wkb, Types.wkb.Polygon, parentOptions);
+
+    if (this.exteriorRing.length > 0) {
+        wkb.writeUInt32LE(1 + this.interiorRings.length);
+        wkb.writeUInt32LE(this.exteriorRing.length);
+    }
+    else {
+        wkb.writeUInt32LE(0);
+    }
+
+    for (var i = 0; i < this.exteriorRing.length; i++)
+        this.exteriorRing[i]._writeWkbPoint(wkb);
+
+    for (i = 0; i < this.interiorRings.length; i++) {
+        wkb.writeUInt32LE(this.interiorRings[i].length);
+
+        for (var j = 0; j < this.interiorRings[i].length; j++)
+            this.interiorRings[i][j]._writeWkbPoint(wkb);
+    }
+
+    return wkb.buffer;
+};
+
+Polygon.prototype.toTwkb = function () {
+    var twkb = new BinaryWriter(0, true);
+
+    var precision = Geometry.getTwkbPrecision(5, 0, 0);
+    var isEmpty = this.exteriorRing.length === 0;
+
+    this._writeTwkbHeader(twkb, Types.wkb.Polygon, precision, isEmpty);
+
+    if (this.exteriorRing.length > 0) {
+        twkb.writeVarInt(1 + this.interiorRings.length);
+
+        twkb.writeVarInt(this.exteriorRing.length);
+
+        var previousPoint = new Point(0, 0, 0, 0);
+        for (var i = 0; i < this.exteriorRing.length; i++)
+            this.exteriorRing[i]._writeTwkbPoint(twkb, precision, previousPoint);
+
+        for (i = 0; i < this.interiorRings.length; i++) {
+            twkb.writeVarInt(this.interiorRings[i].length);
+
+            for (var j = 0; j < this.interiorRings[i].length; j++)
+                this.interiorRings[i][j]._writeTwkbPoint(twkb, precision, previousPoint);
+        }
+    }
+
+    return twkb.buffer;
+};
+
+Polygon.prototype._getWkbSize = function () {
+    var coordinateSize = 16;
+
+    if (this.hasZ)
+        coordinateSize += 8;
+    if (this.hasM)
+        coordinateSize += 8;
+
+    var size = 1 + 4 + 4;
+
+    if (this.exteriorRing.length > 0)
+        size += 4 + (this.exteriorRing.length * coordinateSize);
+
+    for (var i = 0; i < this.interiorRings.length; i++)
+        size += 4 + (this.interiorRings[i].length * coordinateSize);
+
+    return size;
+};
+
+Polygon.prototype.toGeoJSON = function (options) {
+    var geoJSON = Geometry.prototype.toGeoJSON.call(this, options);
+    geoJSON.type = Types.geoJSON.Polygon;
+    geoJSON.coordinates = [];
+
+    if (this.exteriorRing.length > 0) {
+        var exteriorRing = [];
+
+        for (var i = 0; i < this.exteriorRing.length; i++) {
+            if (this.hasZ)
+                exteriorRing.push([this.exteriorRing[i].x, this.exteriorRing[i].y, this.exteriorRing[i].z]);
+            else
+                exteriorRing.push([this.exteriorRing[i].x, this.exteriorRing[i].y]);
+        }
+
+        geoJSON.coordinates.push(exteriorRing);
+    }
+
+    for (var j = 0; j < this.interiorRings.length; j++) {
+        var interiorRing = [];
+
+        for (var k = 0; k < this.interiorRings[j].length; k++) {
+            if (this.hasZ)
+                interiorRing.push([this.interiorRings[j][k].x, this.interiorRings[j][k].y, this.interiorRings[j][k].z]);
+            else
+                interiorRing.push([this.interiorRings[j][k].x, this.interiorRings[j][k].y]);
+        }
+
+        geoJSON.coordinates.push(interiorRing);
+    }
+
+    return geoJSON;
+};
+
+},{"./binarywriter":146,"./geometry":147,"./point":153,"./types":155,"util":142}],155:[function(require,module,exports){
+module.exports = {
+    wkt: {
+        Point: 'POINT',
+        LineString: 'LINESTRING',
+        Polygon: 'POLYGON',
+        MultiPoint: 'MULTIPOINT',
+        MultiLineString: 'MULTILINESTRING',
+        MultiPolygon: 'MULTIPOLYGON',
+        GeometryCollection: 'GEOMETRYCOLLECTION'
+    },
+    wkb: {
+        Point: 1,
+        LineString: 2,
+        Polygon: 3,
+        MultiPoint: 4,
+        MultiLineString: 5,
+        MultiPolygon: 6,
+        GeometryCollection: 7
+    },
+    geoJSON: {
+        Point: 'Point',
+        LineString: 'LineString',
+        Polygon: 'Polygon',
+        MultiPoint: 'MultiPoint',
+        MultiLineString: 'MultiLineString',
+        MultiPolygon: 'MultiPolygon',
+        GeometryCollection: 'GeometryCollection'
+    }
+};
+
+},{}],156:[function(require,module,exports){
+module.exports = WktParser;
+
+var Types = require('./types');
+var Point = require('./point');
+
+function WktParser(value) {
+    this.value = value;
+    this.position = 0;
+}
+
+WktParser.prototype.match = function (tokens) {
+    this.skipWhitespaces();
+
+    for (var i = 0; i < tokens.length; i++) {
+        if (this.value.substring(this.position).indexOf(tokens[i]) === 0) {
+            this.position += tokens[i].length;
+            return tokens[i];
+        }
+    }
+
+    return null;
+};
+
+WktParser.prototype.matchRegex = function (tokens) {
+    this.skipWhitespaces();
+
+    for (var i = 0; i < tokens.length; i++) {
+        var match = this.value.substring(this.position).match(tokens[i]);
+
+        if (match) {
+            this.position += match[0].length;
+            return match;
+        }
+    }
+
+    return null;
+};
+
+WktParser.prototype.isMatch = function (tokens) {
+    this.skipWhitespaces();
+
+    for (var i = 0; i < tokens.length; i++) {
+        if (this.value.substring(this.position).indexOf(tokens[i]) === 0) {
+            this.position += tokens[i].length;
+            return true;
+        }
+    }
+
+    return false;
+};
+
+WktParser.prototype.matchType = function () {
+    var geometryType = this.match([Types.wkt.Point, Types.wkt.LineString, Types.wkt.Polygon, Types.wkt.MultiPoint,
+                                   Types.wkt.MultiLineString, Types.wkt.MultiPolygon, Types.wkt.GeometryCollection]);
+
+    if (!geometryType)
+        throw new Error('Expected geometry type');
+
+    return geometryType;
+};
+
+WktParser.prototype.matchDimension = function () {
+    var dimension = this.match(['ZM', 'Z', 'M']);
+
+    switch (dimension) {
+        case 'ZM': return { hasZ: true, hasM: true };
+        case 'Z': return { hasZ: true, hasM: false };
+        case 'M': return { hasZ: false, hasM: true };
+        default: return { hasZ: false, hasM: false };
+    }
+};
+
+WktParser.prototype.expectGroupStart = function () {
+    if (!this.isMatch(['(']))
+        throw new Error('Expected group start');
+};
+
+WktParser.prototype.expectGroupEnd = function () {
+    if (!this.isMatch([')']))
+        throw new Error('Expected group end');
+};
+
+WktParser.prototype.matchCoordinate = function (options) {
+    var match;
+
+    if (options.hasZ && options.hasM)
+        match = this.matchRegex([/^(-?\d+\.?\d*)\s+(-?\d+\.?\d*)\s+(-?\d+\.?\d*)\s+(-?\d+\.?\d*)/]);
+    else if (options.hasZ || options.hasM)
+        match = this.matchRegex([/^(-?\d+\.?\d*)\s+(-?\d+\.?\d*)\s+(-?\d+\.?\d*)/]);
+    else
+        match = this.matchRegex([/^(-?\d+\.?\d*)\s+(-?\d+\.?\d*)/]);
+
+    if (!match)
+        throw new Error('Expected coordinates');
+
+    if (options.hasZ && options.hasM)
+        return new Point(parseFloat(match[1]), parseFloat(match[2]), parseFloat(match[3]), parseFloat(match[4]));
+    else if (options.hasZ)
+        return new Point(parseFloat(match[1]), parseFloat(match[2]), parseFloat(match[3]));
+    else if (options.hasM)
+        return new Point(parseFloat(match[1]), parseFloat(match[2]), undefined, parseFloat(match[3]));
+    else
+        return new Point(parseFloat(match[1]), parseFloat(match[2]));
+};
+
+WktParser.prototype.matchCoordinates = function (options) {
+    var coordinates = [];
+
+    do {
+        var startsWithBracket = this.isMatch(['(']);
+
+        coordinates.push(this.matchCoordinate(options));
+
+        if (startsWithBracket)
+            this.expectGroupEnd();
+    } while (this.isMatch([',']));
+
+    return coordinates;
+};
+
+WktParser.prototype.skipWhitespaces = function () {
+    while (this.position < this.value.length && this.value[this.position] === ' ')
+        this.position++;
+};
+
+},{"./point":153,"./types":155}],157:[function(require,module,exports){
+exports.Types = require('./types');
+exports.Geometry = require('./geometry');
+exports.Point = require('./point');
+exports.LineString = require('./linestring');
+exports.Polygon = require('./polygon');
+exports.MultiPoint = require('./multipoint');
+exports.MultiLineString = require('./multilinestring');
+exports.MultiPolygon = require('./multipolygon');
+exports.GeometryCollection = require('./geometrycollection');
+},{"./geometry":147,"./geometrycollection":148,"./linestring":149,"./multilinestring":150,"./multipoint":151,"./multipolygon":152,"./point":153,"./polygon":154,"./types":155}],158:[function(require,module,exports){
+module.exports = {
+    encode: function (value) {
+        return (value << 1) ^ (value >> 31);
+    },
+    decode: function (value) {
+        return (value >> 1) ^ (-(value & 1));
+    }
+};
+
+},{}],159:[function(require,module,exports){
 module.exports = extend
 
 function extend() {
@@ -24750,10 +28131,10 @@ function extend() {
     return target
 }
 
-},{}],144:[function(require,module,exports){
+},{}],160:[function(require,module,exports){
 module.exports = function(hostname) {
     // Settings for geojson.io
-    L.mapbox.accessToken = 'pk.eyJ1IjoibWFwYm94IiwiYSI6IlpIdEpjOHcifQ.Cldl4wq_T5KOgxhLvbjE-w';
+    L.mapbox.accessToken = 'pk.eyJ1IjoibWFwYm94IiwiYSI6ImNpejY4NXFhYTA2bTMyeW44ZG0ybXBkMHkifQ.gUGbDOPUN1v1fTs5SeOR4A';
     if (hostname === 'geojson.io') {
         L.mapbox.config.FORCE_HTTPS = true;
         return {
@@ -24775,7 +28156,7 @@ module.exports = function(hostname) {
     }
 };
 
-},{}],145:[function(require,module,exports){
+},{}],161:[function(require,module,exports){
 var clone = require('clone'),
     xtend = require('xtend'),
     config = require('../config.js')(location.hostname),
@@ -25066,7 +28447,7 @@ module.exports = function(context) {
     return data;
 };
 
-},{"../config.js":144,"../source/gist":161,"../source/github":162,"../source/local":163,"clone":8,"xtend":143}],146:[function(require,module,exports){
+},{"../config.js":160,"../source/gist":177,"../source/github":178,"../source/local":179,"clone":10,"xtend":159}],162:[function(require,module,exports){
 var qs = require('qs-hash'),
     zoomextent = require('../lib/zoomextent'),
     flash = require('../ui/flash');
@@ -25114,6 +28495,7 @@ module.exports = function(context) {
 
     function loadUrl(data) {
         d3.json(data)
+            .header('Accept', 'application/vnd.geo+json')
             .on('load', onload)
             .on('error', onerror)
             .get();
@@ -25151,7 +28533,7 @@ module.exports = function(context) {
     };
 };
 
-},{"../lib/zoomextent":156,"../ui/flash":167,"qs-hash":86}],147:[function(require,module,exports){
+},{"../lib/zoomextent":172,"../ui/flash":183,"qs-hash":89}],163:[function(require,module,exports){
 var config = require('../config.js')(location.hostname);
 
 module.exports = function(context) {
@@ -25195,7 +28577,7 @@ module.exports = function(context) {
     return repo;
 };
 
-},{"../config.js":144}],148:[function(require,module,exports){
+},{"../config.js":160}],164:[function(require,module,exports){
 var qs = require('qs-hash'),
     xtend = require('xtend');
 
@@ -25262,7 +28644,7 @@ module.exports = function(context) {
     return router;
 };
 
-},{"qs-hash":86,"xtend":143}],149:[function(require,module,exports){
+},{"qs-hash":89,"xtend":159}],165:[function(require,module,exports){
 var config = require('../config.js')(location.hostname);
 
 module.exports = function(context) {
@@ -25350,7 +28732,7 @@ module.exports = function(context) {
     return user;
 };
 
-},{"../config.js":144}],150:[function(require,module,exports){
+},{"../config.js":160}],166:[function(require,module,exports){
 var qs = require('qs-hash');
 require('leaflet-hash');
 
@@ -25389,16 +28771,21 @@ L.Hash.prototype.formatHash = function(map) {
                 return '#' + qs.qsString(query);
 };
 
-},{"leaflet-hash":62,"qs-hash":86}],151:[function(require,module,exports){
+},{"leaflet-hash":62,"qs-hash":89}],167:[function(require,module,exports){
+(function (Buffer){
 var escape = require('escape-html'),
     geojsonRandom = require('geojson-random'),
     geojsonExtent = require('geojson-extent'),
     geojsonFlatten = require('geojson-flatten'),
+    polyline = require('polyline'),
+    wkx = require('wkx'),
     zoomextent = require('../lib/zoomextent');
 
 module.exports.adduserlayer = function(context, _url, _name) {
     var url = escape(_url), name = escape(_name);
-    var layer = L.tileLayer(url);
+    var layer = L.tileLayer(url, {
+        maxZoom: context.map.getMaxZoom()
+    });
     if (context.layerControl) {
         context.map.addLayer(layer);
         context.layerControl.addOverlay(layer, name);
@@ -25432,7 +28819,54 @@ module.exports.flatten = function(context) {
     context.data.set({ map: geojsonFlatten(context.data.get('map')) });
 };
 
-},{"../lib/zoomextent":156,"escape-html":17,"geojson-extent":23,"geojson-flatten":24,"geojson-random":26}],152:[function(require,module,exports){
+module.exports.polyline = function(context) {
+    var input = prompt('Enter your polyline');
+    try {
+        var decoded = polyline.toGeoJSON(input);
+        context.data.set({ map: decoded });
+    } catch(e) {
+        alert('Sorry, we were unable to decode that polyline');
+    }
+};
+
+module.exports.wkxBase64 = function(context) {
+    var input = prompt('Enter your Base64 encoded WKB/EWKB');
+    try {
+        var decoded = wkx.Geometry.parse(Buffer.from(input,'base64'));
+        context.data.set({ map: decoded.toGeoJSON() });
+        zoomextent(context);
+    } catch(e) {
+        console.error(e)
+        alert('Sorry, we were unable to decode that Base64 encoded WKX data');
+    }
+};
+
+module.exports.wkxHex = function(context) {
+    var input = prompt('Enter your Hex encoded WKB/EWKB');
+    try {
+        var decoded = wkx.Geometry.parse(Buffer.from(input,'hex'));
+        context.data.set({ map: decoded.toGeoJSON() });
+        zoomextent(context);
+    } catch(e) {
+        console.error(e)
+        alert('Sorry, we were unable to decode that Hex encoded WKX data');
+    }
+};
+
+module.exports.wkxString = function(context) {
+    var input = prompt('Enter your WKT/EWKT String');
+    try {
+        var decoded = wkx.Geometry.parse(input);
+        context.data.set({ map: decoded.toGeoJSON() });
+        zoomextent(context);
+    } catch(e) {
+        console.error(e)
+        alert('Sorry, we were unable to decode that WKT data');
+    }
+};
+
+}).call(this,require("buffer").Buffer)
+},{"../lib/zoomextent":172,"buffer":9,"escape-html":19,"geojson-extent":25,"geojson-flatten":26,"geojson-random":28,"polyline":86,"wkx":157}],168:[function(require,module,exports){
 module.exports = function(context) {
     return function(e) {
         var sel = d3.select(e.popup._contentNode);
@@ -25496,7 +28930,7 @@ module.exports = function(context) {
     };
 };
 
-},{}],153:[function(require,module,exports){
+},{}],169:[function(require,module,exports){
 var topojson = require('topojson'),
     toGeoJSON = require('togeojson'),
     gtfs2geojson = require('gtfs2geojson'),
@@ -25688,7 +29122,7 @@ function readFile(f, text, callback) {
     }
 }
 
-},{"csv2geojson":9,"geojson-normalize":25,"gtfs2geojson":34,"osmtogeojson":64,"polytogeojson":84,"togeojson":103,"topojson":"BOmyIj"}],154:[function(require,module,exports){
+},{"csv2geojson":11,"geojson-normalize":27,"gtfs2geojson":33,"osmtogeojson":64,"polytogeojson":87,"togeojson":106,"topojson":"topojson"}],170:[function(require,module,exports){
 module.exports = function(map, feature, bounds) {
     var zoomLevel;
 
@@ -25700,7 +29134,7 @@ module.exports = function(map, feature, bounds) {
     }
 };
 
-},{}],155:[function(require,module,exports){
+},{}],171:[function(require,module,exports){
 var geojsonhint = require('geojsonhint');
 
 module.exports = function(callback) {
@@ -25761,13 +29195,13 @@ module.exports = function(callback) {
     };
 };
 
-},{"geojsonhint":30}],156:[function(require,module,exports){
+},{"geojsonhint":32}],172:[function(require,module,exports){
 module.exports = function(context) {
     var bounds = context.mapLayer.getBounds();
     if (bounds.isValid()) context.map.fitBounds(bounds);
 };
 
-},{}],157:[function(require,module,exports){
+},{}],173:[function(require,module,exports){
 var ui = require('./ui'),
     map = require('./ui/map'),
     data = require('./core/data'),
@@ -25797,7 +29231,7 @@ function geojsonIO() {
     return context;
 }
 
-},{"./core/data":145,"./core/loader":146,"./core/repo":147,"./core/router":148,"./core/user":149,"./ui":164,"./ui/map":169,"store":101}],158:[function(require,module,exports){
+},{"./core/data":161,"./core/loader":162,"./core/repo":163,"./core/router":164,"./core/user":165,"./ui":180,"./ui/map":185,"store":104}],174:[function(require,module,exports){
 (function (Buffer){
 
 var marked = require('marked');
@@ -25805,7 +29239,7 @@ var marked = require('marked');
 module.exports = function(context) {
     var html = Buffer("PGgyPkhlbHA8L2gyPgoKPHA+TmV3IGhlcmU/IDxzdHJvbmc+Z2VvanNvbi5pbzwvc3Ryb25nPiBpcyBhIHF1aWNrLCBzaW1wbGUgdG9vbCBmb3IgY3JlYXRpbmcsCnZpZXdpbmcsIGFuZCBzaGFyaW5nIG1hcHMuIGdlb2pzb24uaW8gaXMgbmFtZWQgYWZ0ZXIgPGEgaHJlZj0naHR0cDovL2dlb2pzb24ub3JnLycgdGFyZ2V0PSdfYmxhbmsnPkdlb0pTT048L2E+LAphbiBvcGVuIHNvdXJjZSBkYXRhIGZvcm1hdCwgYW5kIGl0IHN1cHBvcnRzIEdlb0pTT04gaW4gYWxsIHdheXMgLSBidXQgYWxzbwphY2NlcHRzIEtNTCwgR1BYLCBDU1YsIEdURlMsIFRvcG9KU09OLCBhbmQgb3RoZXIgZm9ybWF0cy48L3A+Cgo8cD5OZWVkIGV4dHJhIGhlbHAgb3Igc2VlIGEgYnVnPyA8YSB0YXJnZXQ9J19ibGFuaycgaHJlZj0naHR0cHM6Ly9naXRodWIuY29tL21hcGJveC9nZW9qc29uLmlvL2lzc3Vlcz9zdGF0ZT1vcGVuJz5PcGVuIGFuIGlzc3VlCiAgICBvbiBnZW9qc29uLmlvJ3MgaXNzdWUgdHJhY2tlci48L2E+Cgo8aDM+SSd2ZSBnb3QgZGF0YTwvaDM+Cgo8cD5JZiB5b3UgaGF2ZSBkYXRhLCBsaWtlIGEgS01MLCBHZW9KU09OLCBvciBDU1YgZmlsZSwganVzdCBkcmFnICZhbXA7IGRyb3AKaXQgb250byB0aGUgcGFnZSBvciBjbGljayAnT3BlbicgYW5kICdGaWxlJyAtIHlvdXIgZGF0YSBzaG91bGQgYXBwZWFyIG9uCnRoZSBtYXAhPC9wPgoKPGgzPkkgd2FudCB0byBkcmF3IGZlYXR1cmVzPC9oMz4KCjxwPkNsaWNrIHRoZSBkcmF3aW5nIHRvb2xzIG9uIHRoZSBsZWZ0LWhhbmQgc2lkZSB0byBkcmF3IHBvaW50cywgcG9seWdvbnMsCmxpbmVzIGFuZCByZWN0YW5nbGVzLiBBZnRlciB5b3UncmUgZG9uZSBkcmF3aW5nIHRoZSBzaGFwZXMsIHlvdSBjYW4gYWRkCmluZm9ybWF0aW9uIHRvIGVhY2ggZmVhdHVyZSBieSBjbGlja2luZyBvbiBpdCwgZWRpdGluZyB0aGUgZmVhdHVyZSdzIHByb3BlcnRpZXMsCmFuZCBjbGlja2luZyAnU2F2ZScuPC9wPgoKPHA+UHJvcGVydGllcyBpbiBHZW9KU09OIGFyZSBzdG9yZWQgYXMgJ2tleSB2YWx1ZSBwYWlycycgLSBzbywgZm9yIGluc3RhbmNlLAppZiB5b3Ugd2FudGVkIHRvIGFkZCBhIG5hbWUgdG8gZWFjaCBmZWF0dXJlLCB0eXBlICduYW1lJyBpbiB0aGUgZmlyc3QgdGFibGUKZmllbGQsIGFuZCB0aGUgbmFtZSBvZiB0aGUgZmVhdHVyZSBpbiB0aGUgc2Vjb25kLjwvcD4KCjxoMz5JIHdhbnQgdG8gdXNlIG15IG1hcCBldmVyeXdoZXJlPC9oMz4KCjxwPllvdSBjYW4gc2hhcmUgbWFwcyBpbiBxdWl0ZSBhIGZldyB3YXlzISBJZiB5b3Ugc2F2ZSB5b3VyIG1hcCBoZXJlLCB0aGUgVVJMCm9mIHRoaXMgcGFnZSB3aWxsIHVwZGF0ZSBhbmQgeW91IGNhbiBsaW5rIHNlbmQgZnJpZW5kcyB0aGUgbGluayB0byBzaGFyZQp0aGUgbWFwLCBvciB5b3UgY2FuIGNsaWNrICdEb3dubG9hZCcgdG8gZ3JhYiB0aGUgcmF3IEdlb0pTT04gZGF0YSBhbmQgdXNlCml0IGluIG90aGVyIHNvZnR3YXJlLCBsaWtlIFRpbGVNaWxsIG9yIExlYWZsZXQuPC9wPgoKPGgzPkknbSBhIGNvZGVyPC9oMz4KCjxwPjxhIGhyZWY9JyNnZW9qc29uLWlvLWFwaSc+Z2VvanNvbi5pbyBoYXMgYW4gYXJyYXkgb2YgY2xpIHRvb2xzPC9hPgp0aGF0IG1ha2UgaXQgZWFzeSB0byBnbyBmcm9tIGEgR2VvSlNPTiBmaWxlIG9uIHlvdXIgY29tcHV0ZXIgdG8gZ2VvanNvbi5pby4KCjxoMz5Qcm90aXBzPzwvaDM+Cgo8dWw+CiAgICA8bGk+PHN0cm9uZz5jbWQrczwvc3Ryb25nPjogc2F2ZSBtYXAgdG8gZ2l0aHViIGdpc3RzCiAgICA8bGk+PHN0cm9uZz5jbWQrYTwvc3Ryb25nPjogZG93bmxvYWQgbWFwIGFzIGdlb2pzb24KICAgIDxsaT48c3Ryb25nPmFycm93IGtleXM8L3N0cm9uZz46IG5hdmlnYXRlIHRoZSBtYXAKPC91bD4KCjxoMz5Qcml2YWN5ICZhbXA7IExpY2Vuc2UgSXNzdWVzPC9oMz4KCjx1bD4KICAgIDxsaT48c3Ryb25nPkNsaWNraW5nIHNhdmU8L3N0cm9uZz4gYnkgZGVmYXVsdCBzYXZlcyB0byBhIHByaXZhdGUKICAgIEdpdEh1YiBHaXN0IC0gc28gaXQgd2lsbCBvbmx5IGJlIGFjY2Vzc2libGUgdG8gcGVvcGxlIHlvdSBzaGFyZSB0aGUgVVJMCiAgICB3aXRoLCBhbmQgY3JlYXRpbmcgaXQgd29uJ3QgYXBwZWFyIGluIHlvdXIgR2l0SHViIHRpbWVsaW5lLgogICAgPGxpPjxzdHJvbmc+VGhlIGRhdGEgeW91IGNyZWF0ZSBhbmQgbW9kaWZ5IGluIGdlb2pzb24uaW88L3N0cm9uZz4gZG9lc24ndAogICAgYWNxdWlyZSBhbnkgYWRkaXRpb25hbCBsaWNlbnNlOiBpZiBpdCdzIHNlY3JldCBhbmQgY29weXJpZ2h0ZWQsIGl0IHdpbGwgcmVtYWluCiAgICB0aGF0IHdheSAtIGl0IGRvZXNuJ3QgaGF2ZSB0byBiZSBwdWJsaWMgb3Igb3BlbiBzb3VyY2UuCjwvdWw+Cg==","base64") +
         '<br><hr><br>' +
-        marked("## Geojson.io API\nYou can interact with geojson.io programmatically in two ways:\n\n* [URL parameters](#url-api)\n* [Browser console](#console-api)\n\n## URL API\nYou can do a few interesting things with just URLs and geojson.io. Here are the\ncurrent URL formats.\n\n### `map`\n\nOpen the map at a specific location. The argument is numbers separated by `/`\nin the form `zoom/latitude/longitude`.\n\n#### Example:\n\nhttp://geojson.io/#map=2/20.0/0.0\n\n\n### `data=data:application/json,`\n\nOpen the map and load a chunk of [GeoJSON](http://geojson.org/) data from a\nURL segment directly onto the map. The GeoJSON data should be encoded\nas per `encodeURIComponent(JSON.stringify(geojson_data))`.\n\n#### Example:\n\nhttp://geojson.io/#data=data:application/json,%7B%22type%22%3A%22LineString%22%2C%22coordinates%22%3A%5B%5B0%2C0%5D%2C%5B10%2C10%5D%5D%7D\n\n\n### `data=data:text/x-url,`\n\nLoad GeoJSON data from a URL on the internet onto the map. The URL must\nrefer directly to a resource that is:\n\n* Freely accessible (not behind a password)\n* Supports [CORS](http://en.wikipedia.org/wiki/Cross-origin_resource_sharing)\n* Is valid GeoJSON\n\nThe URL should be encoded as per `encodeURIComponent(url)`.\n\n#### Example:\n\nhttp://geojson.io/#data=data:text/x-url,http%3A%2F%2Fapi.tiles.mapbox.com%2Fv3%2Ftmcw.map-gdv4cswo%2Fmarkers.geojson\n\n\n### `id=gist:`\n\nLoad GeoJSON data from a [GitHub Gist](https://gist.github.com/), given an argument\nin the form of `login/gistid`. The Gist can be public or private, and must\ncontain a file with a `.geojson` extension that is valid GeoJSON.\n\n#### Example:\n\nhttp://geojson.io/#id=gist:tmcw/e9a29ad54dbaa83dee08&map=8/39.198/-76.981\n\n\n### `id=github:`\n\nLoad a file from a GitHub repository. You must have access to the file, and\nit must be valid GeoJSON.\n\nThe url is in the form:\n\n    login/repository/blob/branch/filepath\n\n#### Example:\n\nhttp://geojson.io/#id=github:benbalter/dc-wifi-social/blob/master/bars.geojson&map=14/38.9140/-77.0302\n\n## Console API\n\n[Pop open your browser console](http://debugbrowser.com/) and see the beautiful\nexamples: geojson.io has started to expose a subset of its inner workings for\nyou to mess around with:\n\n\n### `window.api.map`\n\nThe [Leaflet](http://leafletjs.com/) map that you see and use on the site. See\nthe [Leaflet API](http://leafletjs.com/reference.html) for all the things you\ncan do with it.\n\nFor instance, you could add another map layer:\n\n```js\nwindow.api.map.addLayer(L.tileLayer('http://tile.stamen.com/watercolor/{z}/{x}/{y}.jpg'))\n```\n\n### `window.api.data`\n\nThe data model. See the [code to get an idea of how it works](https://github.com/mapbox/geojson.io/blob/gh-pages/src/core/data.js#L48-L90) -\nyou'll want to use stuff like `data.set({ map: { .. your geojson map information .. })`\nand `data.get('map')` and `data.mergeFeatures([arrayoffeatures])` to do your\ndirty business.\n");
+        marked("## Geojson.io API\nYou can interact with geojson.io programmatically in two ways:\n\n* [URL parameters](#url-api)\n* [Browser console](#console-api)\n* [Protips](#protips)\n\n## URL API\nYou can do a few interesting things with just URLs and geojson.io. Here are the\ncurrent URL formats.\n\n### `map`\n\nOpen the map at a specific location. The argument is numbers separated by `/`\nin the form `zoom/latitude/longitude`.\n\n#### Example:\n\nhttp://geojson.io/#map=2/20.0/0.0\n\n\n### `data=data:application/json,`\n\nOpen the map and load a chunk of [GeoJSON](http://geojson.org/) data from a\nURL segment directly onto the map. The GeoJSON data should be encoded\nas per `encodeURIComponent(JSON.stringify(geojson_data))`.\n\n#### Example:\n\nhttp://geojson.io/#data=data:application/json,%7B%22type%22%3A%22LineString%22%2C%22coordinates%22%3A%5B%5B0%2C0%5D%2C%5B10%2C10%5D%5D%7D\n\n\n### `data=data:text/x-url,`\n\nLoad GeoJSON data from a URL on the internet onto the map. The URL must\nrefer directly to a resource that is:\n\n* Freely accessible (not behind a password)\n* Supports [CORS](http://en.wikipedia.org/wiki/Cross-origin_resource_sharing)\n* Is valid GeoJSON\n\nThe URL should be encoded as per `encodeURIComponent(url)`.\n\n#### Example:\n\nhttp://geojson.io/#data=data:text/x-url,http%3A%2F%2Fapi.tiles.mapbox.com%2Fv3%2Ftmcw.map-gdv4cswo%2Fmarkers.geojson\n\n\n### `id=gist:`\n\nLoad GeoJSON data from a [GitHub Gist](https://gist.github.com/), given an argument\nin the form of `login/gistid`. The Gist can be public or private, and must\ncontain a file with a `.geojson` extension that is valid GeoJSON.\n\n#### Example:\n\nhttp://geojson.io/#id=gist:tmcw/e9a29ad54dbaa83dee08&map=8/39.198/-76.981\n\n\n### `id=github:`\n\nLoad a file from a GitHub repository. You must have access to the file, and\nit must be valid GeoJSON.\n\nThe url is in the form:\n\n    login/repository/blob/branch/filepath\n\n#### Example:\n\nhttp://geojson.io/#id=github:benbalter/dc-wifi-social/blob/master/bars.geojson&map=14/38.9140/-77.0302\n\n## Console API\n\n[Pop open your browser console](http://debugbrowser.com/) and see the beautiful\nexamples: geojson.io has started to expose a subset of its inner workings for\nyou to mess around with:\n\n\n### `window.api.map`\n\nThe [Leaflet](http://leafletjs.com/) map that you see and use on the site. See\nthe [Leaflet API](http://leafletjs.com/reference.html) for all the things you\ncan do with it.\n\nFor instance, you could add another map layer:\n\n```js\nwindow.api.map.addLayer(L.tileLayer('http://tile.stamen.com/watercolor/{z}/{x}/{y}.jpg'))\n```\n\n### `window.api.data`\n\nThe data model. See the [code to get an idea of how it works](https://github.com/mapbox/geojson.io/blob/gh-pages/src/core/data.js#L48-L90) -\nyou'll want to use stuff like `data.set({ map: { .. your geojson map information .. })`\nand `data.get('map')` and `data.mergeFeatures([arrayoffeatures])` to do your\ndirty business.\n\n## `window.api.mapLayer`\n\nThis is the Leaflet featureGroup that gets filled with features as you draw\nthem. You can operate on this directly to do advanced stuff like\nselecting a feature with its id:\n\n```js\nvar layers = [];\nwindow.api.mapLayer.eachLayer(l => { layers.push(l); });\nlayers.find(l => l.feature.id == 'a').openPopup();\n```\n\nThat example uses [arrow functions](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Functions/Arrow_functions)\nwhich are supported in Chrome & Firefox.\n\n## `window.api.drawControl`\n\nExposes the [Leaflet.Draw](https://github.com/Leaflet/Leaflet.draw) control\ninstance in the console.\n\n## `window.api.on(event, fn)`\n\nExposes d3 events, including `change`.\n\n## Protips\n\nTo include `turf` from [turf](https://github.com/turfjs/turf) so you can manipulate features\nwith its GIS features, run this in the CLI, which will download the script and evaluate it.\n\n```js\nfetch('https://npmcdn.com/@turf/turf@3.1.1/turf.js').then(t => t.text()).then(eval)\n```\n");
     function render(selection) {
         var area = selection
             .html('')
@@ -25821,7 +29255,7 @@ module.exports = function(context) {
 };
 
 }).call(this,require("buffer").Buffer)
-},{"buffer":6,"marked":63}],159:[function(require,module,exports){
+},{"buffer":9,"marked":63}],175:[function(require,module,exports){
 var validate = require('../lib/validate'),
     zoomextent = require('../lib/zoomextent'),
     saver = require('../ui/saver.js');
@@ -25886,7 +29320,7 @@ module.exports = function(context) {
     return render;
 };
 
-},{"../lib/validate":155,"../lib/zoomextent":156,"../ui/saver.js":173}],160:[function(require,module,exports){
+},{"../lib/validate":171,"../lib/zoomextent":172,"../ui/saver.js":189}],176:[function(require,module,exports){
 var metatable = require('d3-metatable')(d3),
     smartZoom = require('../lib/smartzoom.js');
 
@@ -25958,9 +29392,9 @@ module.exports = function(context) {
     return render;
 };
 
-},{"../lib/smartzoom.js":154,"d3-metatable":10}],161:[function(require,module,exports){
+},{"../lib/smartzoom.js":170,"d3-metatable":12}],177:[function(require,module,exports){
 
-var tmpl = "<!DOCTYPE html>\n<html>\n<head>\n  <meta name='viewport' content='width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no' />\n  <style>\n  body { margin:0; padding:0; }\n  #map { position:absolute; top:0; bottom:0; width:100%; }\n  .marker-properties {\n    border-collapse:collapse;\n    font-size:11px;\n    border:1px solid #eee;\n    margin:0;\n}\n.marker-properties th {\n    white-space:nowrap;\n    border:1px solid #eee;\n    padding:5px 10px;\n}\n.marker-properties td {\n    border:1px solid #eee;\n    padding:5px 10px;\n}\n.marker-properties tr:last-child td,\n.marker-properties tr:last-child th {\n    border-bottom:none;\n}\n.marker-properties tr:nth-child(even) th,\n.marker-properties tr:nth-child(even) td {\n    background-color:#f7f7f7;\n}\n  </style>\n  <script src='//api.tiles.mapbox.com/mapbox.js/v2.2.2/mapbox.js'></script>\n  <script src='//ajax.googleapis.com/ajax/libs/jquery/1.10.2/jquery.min.js' ></script>\n  <link href='//api.tiles.mapbox.com/mapbox.js/v2.2.2/mapbox.css' rel='stylesheet' />\n</head>\n<body>\n<div id='map'></div>\n<script type='text/javascript'>\nL.mapbox.accessToken = 'pk.eyJ1IjoibWFwYm94IiwiYSI6IlpIdEpjOHcifQ.Cldl4wq_T5KOgxhLvbjE-w';\nvar map = L.mapbox.map('map');\n\nL.mapbox.tileLayer('tmcw.map-ajwqaq7t').addTo(map);\n\n$.getJSON('map.geojson', function(geojson) {\n    var geojsonLayer = L.geoJson(geojson).addTo(map);\n    var bounds = geojsonLayer.getBounds();\n    if (bounds.isValid()) {\n        map.fitBounds(geojsonLayer.getBounds());\n    } else {\n        map.setView([0, 0], 2);\n    }\n    geojsonLayer.eachLayer(function(l) {\n        showProperties(l);\n    });\n});\n\nfunction showProperties(l) {\n    var properties = l.toGeoJSON().properties, table = '';\n    for (var key in properties) {\n        table += '<tr><th>' + key + '</th>' +\n            '<td>' + properties[key] + '</td></tr>';\n    }\n    if (table) l.bindPopup('<table class=\"marker-properties display\">' + table + '</table>');\n}\n</script>\n</body>\n</html>\n";
+var tmpl = "<!DOCTYPE html>\n<html>\n<head>\n  <meta name='viewport' content='width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no' />\n  <style>\n  body { margin:0; padding:0; }\n  #map { position:absolute; top:0; bottom:0; width:100%; }\n  .marker-properties {\n    border-collapse:collapse;\n    font-size:11px;\n    border:1px solid #eee;\n    margin:0;\n}\n.marker-properties th {\n    white-space:nowrap;\n    border:1px solid #eee;\n    padding:5px 10px;\n}\n.marker-properties td {\n    border:1px solid #eee;\n    padding:5px 10px;\n}\n.marker-properties tr:last-child td,\n.marker-properties tr:last-child th {\n    border-bottom:none;\n}\n.marker-properties tr:nth-child(even) th,\n.marker-properties tr:nth-child(even) td {\n    background-color:#f7f7f7;\n}\n  </style>\n  <script src='//api.tiles.mapbox.com/mapbox.js/v2.2.2/mapbox.js'></script>\n  <script src='//ajax.googleapis.com/ajax/libs/jquery/1.10.2/jquery.min.js' ></script>\n  <link href='//api.tiles.mapbox.com/mapbox.js/v2.2.2/mapbox.css' rel='stylesheet' />\n</head>\n<body>\n<div id='map'></div>\n<script type='text/javascript'>\nL.mapbox.accessToken = 'pk.eyJ1IjoibWFwYm94IiwiYSI6ImNpejY4NXFhYTA2bTMyeW44ZG0ybXBkMHkifQ.gUGbDOPUN1v1fTs5SeOR4A';\nvar map = L.mapbox.map('map');\n\nL.mapbox.tileLayer('mapbox.streets').addTo(map);\n\n$.getJSON('map.geojson', function(geojson) {\n    var geojsonLayer = L.mapbox.featureLayer(geojson).addTo(map);\n    var bounds = geojsonLayer.getBounds();\n    if (bounds.isValid()) {\n        map.fitBounds(geojsonLayer.getBounds());\n    } else {\n        map.setView([0, 0], 2);\n    }\n    geojsonLayer.eachLayer(function(l) {\n        showProperties(l);\n    });\n});\n\nfunction showProperties(l) {\n    var properties = l.toGeoJSON().properties;\n    var table = document.createElement('table');\n    table.setAttribute('class', 'marker-properties display')\n    for (var key in properties) {\n        var tr = createTableRows(key, properties[key]);\n        table.appendChild(tr);\n    }\n    if (table) l.bindPopup(table);\n}\n\nfunction createTableRows(key, value) {\n    var tr = document.createElement('tr');\n    var th = document.createElement('th');\n    var td = document.createElement('td');\n    key = document.createTextNode(key);\n    value = document.createTextNode(value);\n    th.appendChild(key);\n    td.appendChild(value);\n    tr.appendChild(th);\n    tr.appendChild(td);\n    return tr\n}\n\n</script>\n</body>\n</html>\n";
 
 var config = require('../config.js')(location.hostname);
 var githubBase = config.GithubAPI ? config.GithubAPI + '/api/v3': 'https://api.github.com';
@@ -26072,7 +29506,7 @@ function loadRaw(url, context, callback) {
     function onError(err) { callback(err, null); }
 }
 
-},{"../config.js":144}],162:[function(require,module,exports){
+},{"../config.js":160}],178:[function(require,module,exports){
 module.exports.save = save;
 module.exports.load = load;
 module.exports.loadRaw = loadRaw;
@@ -26113,7 +29547,7 @@ function save(context, callback) {
             var data = {
                 message: commitMessage,
                 branch: meta.branch,
-                content: Base64.toBase64(JSON.stringify(map, null, 2))
+                content: btoa(encodeURIComponent(JSON.stringify(map, null, 2)).replace(/%([0-9A-F]{2})/g, function(match, p1) { return String.fromCharCode('0x' + p1); }))
             };
 
             // creating a file
@@ -26204,7 +29638,7 @@ function shaUrl(parts, sha) {
         '/git/blobs/' + sha;
 }
 
-},{"../config.js":144}],163:[function(require,module,exports){
+},{"../config.js":160}],179:[function(require,module,exports){
 try {
     
 } catch(e) {
@@ -26229,7 +29663,7 @@ function save(context, callback) {
     });
 }
 
-},{}],164:[function(require,module,exports){
+},{}],180:[function(require,module,exports){
 var buttons = require('./ui/mode_buttons'),
     file_bar = require('./ui/file_bar'),
     dnd = require('./ui/dnd'),
@@ -26314,7 +29748,7 @@ function ui(context) {
     };
 }
 
-},{"./ui/dnd":165,"./ui/file_bar":166,"./ui/layer_switch":168,"./ui/mode_buttons":172,"./ui/user":175}],165:[function(require,module,exports){
+},{"./ui/dnd":181,"./ui/file_bar":182,"./ui/layer_switch":184,"./ui/mode_buttons":188,"./ui/user":191}],181:[function(require,module,exports){
 var readDrop = require('../lib/readfile.js').readDrop,
     flash = require('./flash.js'),
     zoomextent = require('../lib/zoomextent');
@@ -26358,15 +29792,15 @@ module.exports = function(context) {
     }
 };
 
-},{"../lib/readfile.js":153,"../lib/zoomextent":156,"./flash.js":167}],166:[function(require,module,exports){
+},{"../lib/readfile.js":169,"../lib/zoomextent":172,"./flash.js":183}],182:[function(require,module,exports){
 var shpwrite = require('shp-write'),
     clone = require('clone'),
     geojson2dsv = require('geojson2dsv'),
     topojson = require('topojson'),
     saveAs = require('filesaver.js'),
     tokml = require('tokml'),
-    githubBrowser = require('github-file-browser'),
-    gistBrowser = require('gist-map-browser'),
+    githubBrowser = require('@mapbox/github-file-browser'),
+    gistBrowser = require('@mapbox/gist-map-browser'),
     geojsonNormalize = require('geojson-normalize'),
     wellknown = require('wellknown');
 
@@ -26478,6 +29912,30 @@ module.exports = function fileBar(context) {
                     alt: 'Flatten MultiPolygons, MultiLines, and GeometryCollections into simple geometries',
                     action: function() {
                         meta.flatten(context);
+                    }
+                }, {
+                    title: 'Load encoded polyline',
+                    alt: 'Decode and show an encoded polyline. Precision 5 is supported.',
+                    action: function() {
+                        meta.polyline(context);
+                    }
+                }, {
+                    title: 'Load WKB Base64 Encoded String',
+                    alt: 'Decode and show WKX data',
+                    action: function() {
+                        meta.wkxBase64(context);
+                    }
+                }, {
+                    title: 'Load WKB Hex Encoded String',
+                    alt: 'Decode and show WKX data',
+                    action: function() {
+                        meta.wkxHex(context);
+                    }
+                }, {
+                    title: 'Load WKT String',
+                    alt: 'Decode and show WKX data',
+                    action: function() {
+                        meta.wkxString(context);
                     }
                 }
             ]
@@ -26640,7 +30098,7 @@ module.exports = function fileBar(context) {
                     if (last.type === 'blob') {
                         githubBrowser.request('/repos/' + d[1].full_name +
                             '/git/blobs/' + last.sha, function(err, blob) {
-                                d.content = JSON.parse(atob(blob[0].content));
+                                d.content = JSON.parse(decodeURIComponent(Array.prototype.map.call(atob(blob[0].content), function(c) { return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2); }).join('')));
                                 context.data.parse(d);
                                 zoomextent(context);
                                 m.close();
@@ -26673,16 +30131,20 @@ module.exports = function fileBar(context) {
                 .onclick(function(d) {
                     if (!d || !d.length) return;
                     var last = d[d.length - 1];
-                    if (last.type === 'new') {
+                    var pathparts;
+                    var partial;
+
+                    // New file
+                    if (last.type === 'new')  {
                         var filename = prompt('New file name');
                         if (!filename) {
                             m.close();
                             return;
                         }
-                        var pathparts = d.slice(3);
+                        pathparts = d.slice(3);
                         pathparts.pop();
                         pathparts.push({ path: filename });
-                        var partial = pathparts.map(function(p) {
+                        partial = pathparts.map(function(p) {
                             return p.path;
                         }).join('/');
                         context.data.set({
@@ -26702,8 +30164,34 @@ module.exports = function fileBar(context) {
                         context.data.set({ newpath: partial + filename });
                         m.close();
                         saver(context);
-                    } else {
-                        alert('overwriting existing files is not yet supported');
+                    }
+                    // Update a file
+                    else if (last.type === 'blob') {
+                        // Build the path
+                        pathparts = d.slice(3);
+                        partial = pathparts.map(function(p) {
+                            return p.path;
+                        }).join('/');
+
+
+                        context.data.set(
+                        {
+                            source: {
+                                url: githubBase + '/repos/' +
+                                    d[0].login + '/' + d[1].name +
+                                        '/contents/' + partial +
+                                        '?ref=' + d[2].name,
+                                sha: last.sha
+                            },
+                            type: 'github',
+                            meta: {
+                                branch: d[2].name,
+                                login: d[0].login,
+                                repo: d[1].name
+                            }
+                        });
+                        m.close();
+                        saver(context);
                     }
                 })
                 .appendTo(
@@ -26861,7 +30349,7 @@ module.exports = function fileBar(context) {
     return bar;
 };
 
-},{"../config.js":144,"../lib/meta.js":151,"../lib/readfile":153,"../lib/zoomextent":156,"../ui/saver.js":173,"./flash":167,"./modal.js":171,"./share":174,"clone":8,"filesaver.js":19,"geojson-normalize":25,"geojson2dsv":29,"gist-map-browser":32,"github-file-browser":33,"shp-write":89,"tokml":104,"topojson":"BOmyIj","wellknown":141}],167:[function(require,module,exports){
+},{"../config.js":160,"../lib/meta.js":167,"../lib/readfile":169,"../lib/zoomextent":172,"../ui/saver.js":189,"./flash":183,"./modal.js":187,"./share":190,"@mapbox/gist-map-browser":2,"@mapbox/github-file-browser":3,"clone":10,"filesaver.js":21,"geojson-normalize":27,"geojson2dsv":31,"shp-write":92,"tokml":107,"topojson":"topojson","wellknown":143}],183:[function(require,module,exports){
 var message = require('./message');
 
 module.exports = flash;
@@ -26883,7 +30371,7 @@ function flash(selection, txt) {
     return msg;
 }
 
-},{"./message":170}],168:[function(require,module,exports){
+},{"./message":186}],184:[function(require,module,exports){
 module.exports = function(context) {
 
     return function(selection) {
@@ -26949,13 +30437,14 @@ module.exports = function(context) {
     };
 };
 
-},{}],169:[function(require,module,exports){
+},{}],185:[function(require,module,exports){
 require('qs-hash');
 require('../lib/custom_hash.js');
 
 var popup = require('../lib/popup'),
     escape = require('escape-html'),
     LGeo = require('leaflet-geodesy'),
+    geojsonRewind = require('geojson-rewind'),
     writable = false,
     showStyle = true,
     makiValues = require('../../data/maki.json'),
@@ -26976,6 +30465,7 @@ module.exports = function(context, readonly) {
                 position: 'topright'
             }));
 
+        L.control.scale().setPosition('bottomright').addTo(context.map);
         context.map.zoomControl.setPosition('topright');
 
         L.hash(context.map);
@@ -27008,7 +30498,9 @@ module.exports = function(context, readonly) {
         context.map.attributionControl.setPrefix('<a target="_blank" href="http://tmcw.wufoo.com/forms/z7x4m1/">Feedback</a> | <a target="_blank" href="http://geojson.io/about.html">About</a>');
 
         function update() {
-            geojsonToLayer(context.mapLayer.toGeoJSON(), context.mapLayer);
+            var geojson = context.mapLayer.toGeoJSON();
+            geojson = geojsonRewind(geojson);
+            geojsonToLayer(geojson, context.mapLayer);
             context.data.set({map: layerToGeoJSON(context.mapLayer)}, 'map');
         }
 
@@ -27061,7 +30553,12 @@ function bindPopup(l) {
     // Steer clear of XSS
     for (var k in props) {
         var e = escape(k);
-        properties[e] = escape(props[k]);
+        // users don't want to see "[object Object]"
+        if (typeof props[k] === 'object') {
+          properties[e] = escape(JSON.stringify(props[k]));
+        } else {
+          properties[e] = escape(props[k]);
+        }
     }
 
     if (!properties) return;
@@ -27213,7 +30710,7 @@ function bindPopup(l) {
     });
 }
 
-},{"../../data/maki.json":1,"../lib/custom_hash.js":150,"../lib/popup":152,"escape-html":17,"leaflet-geodesy":61,"qs-hash":86}],170:[function(require,module,exports){
+},{"../../data/maki.json":1,"../lib/custom_hash.js":166,"../lib/popup":168,"escape-html":19,"geojson-rewind":29,"leaflet-geodesy":61,"qs-hash":89}],186:[function(require,module,exports){
 module.exports = message;
 
 function message(selection) {
@@ -27254,7 +30751,7 @@ function message(selection) {
     return sel;
 }
 
-},{}],171:[function(require,module,exports){
+},{}],187:[function(require,module,exports){
 module.exports = function(selection, blocking) {
 
     var previous = selection.select('div.modal');
@@ -27322,7 +30819,7 @@ module.exports = function(selection, blocking) {
     return shaded;
 };
 
-},{}],172:[function(require,module,exports){
+},{}],188:[function(require,module,exports){
 var table = require('../panel/table'),
     json = require('../panel/json'),
     help = require('../panel/help');
@@ -27374,7 +30871,7 @@ module.exports = function(context, pane) {
     };
 };
 
-},{"../panel/help":158,"../panel/json":159,"../panel/table":160}],173:[function(require,module,exports){
+},{"../panel/help":174,"../panel/json":175,"../panel/table":176}],189:[function(require,module,exports){
 var flash = require('./flash');
 
 module.exports = function(context) {
@@ -27398,7 +30895,7 @@ module.exports = function(context) {
             // Committed to GitHub
             message = 'Changes committed to GitHub: ';
             url = res.commit.html_url;
-            path = res.commit.sha.substring(0,10);
+            path = res.commit.sha.substring(0, 10);
         } else {
             // Saved as a file
             message = 'Changes saved to disk.';
@@ -27442,7 +30939,7 @@ module.exports = function(context) {
     }
 };
 
-},{"./flash":167}],174:[function(require,module,exports){
+},{"./flash":183}],190:[function(require,module,exports){
 var gist = require('../source/gist'),
     modal = require('./modal');
 
@@ -27491,7 +30988,7 @@ function share(context) {
     };
 }
 
-},{"../source/gist":161,"./modal":171}],175:[function(require,module,exports){
+},{"../source/gist":177,"./modal":187}],191:[function(require,module,exports){
 module.exports = function(context) {
     if (!(/a\.tiles\.mapbox\.com/).test(L.mapbox.config.HTTP_URL) && !require('../config.js')(location.hostname).GithubAPI) {
         return function() {};
@@ -27542,4 +31039,15 @@ module.exports = function(context) {
     };
 };
 
-},{"../config.js":144}]},{},[157])
+},{"../config.js":160}],"topojson":[function(require,module,exports){
+var topojson = module.exports = require("./topojson");
+topojson.topology = require("./lib/topojson/topology");
+topojson.simplify = require("./lib/topojson/simplify");
+topojson.clockwise = require("./lib/topojson/clockwise");
+topojson.filter = require("./lib/topojson/filter");
+topojson.prune = require("./lib/topojson/prune");
+topojson.bind = require("./lib/topojson/bind");
+topojson.stitch = require("./lib/topojson/stitch");
+topojson.scale = require("./lib/topojson/scale");
+
+},{"./lib/topojson/bind":108,"./lib/topojson/clockwise":111,"./lib/topojson/filter":115,"./lib/topojson/prune":119,"./lib/topojson/scale":121,"./lib/topojson/simplify":122,"./lib/topojson/stitch":124,"./lib/topojson/topology":125,"./topojson":137}]},{},[173]);

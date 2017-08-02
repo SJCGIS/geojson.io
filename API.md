@@ -3,6 +3,7 @@ You can interact with geojson.io programmatically in two ways:
 
 * [URL parameters](#url-api)
 * [Browser console](#console-api)
+* [Protips](#protips)
 
 ## URL API
 You can do a few interesting things with just URLs and geojson.io. Here are the
@@ -94,3 +95,36 @@ The data model. See the [code to get an idea of how it works](https://github.com
 you'll want to use stuff like `data.set({ map: { .. your geojson map information .. })`
 and `data.get('map')` and `data.mergeFeatures([arrayoffeatures])` to do your
 dirty business.
+
+## `window.api.mapLayer`
+
+This is the Leaflet featureGroup that gets filled with features as you draw
+them. You can operate on this directly to do advanced stuff like
+selecting a feature with its id:
+
+```js
+var layers = [];
+window.api.mapLayer.eachLayer(l => { layers.push(l); });
+layers.find(l => l.feature.id == 'a').openPopup();
+```
+
+That example uses [arrow functions](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Functions/Arrow_functions)
+which are supported in Chrome & Firefox.
+
+## `window.api.drawControl`
+
+Exposes the [Leaflet.Draw](https://github.com/Leaflet/Leaflet.draw) control
+instance in the console.
+
+## `window.api.on(event, fn)`
+
+Exposes d3 events, including `change`.
+
+## Protips
+
+To include `turf` from [turf](https://github.com/turfjs/turf) so you can manipulate features
+with its GIS features, run this in the CLI, which will download the script and evaluate it.
+
+```js
+fetch('https://npmcdn.com/@turf/turf@3.1.1/turf.js').then(t => t.text()).then(eval)
+```

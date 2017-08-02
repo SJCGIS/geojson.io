@@ -4,8 +4,10 @@
   "description": "create and edit maps, on the internet",
   "main": "index.html",
   "dependencies": {
+    "@mapbox/gist-map-browser": "0.2.1",
+    "@mapbox/github-file-browser": "0.6.1",
     "bowser": "0.3.2",
-    "brfs": "^1.0.2",
+    "brfs": "^1.4.3",
     "clean-css": "~2.0.7",
     "clone": "0.1.16",
     "csv2geojson": "3.6.1",
@@ -18,10 +20,9 @@
     "geojson-flatten": "~0.1.0",
     "geojson-normalize": "0.0.0",
     "geojson-random": "0.1.0",
+    "geojson-rewind": "^0.2.0",
     "geojson2dsv": "0.0.0",
     "geojsonhint": "0.3.4",
-    "gist-map-browser": "0.2.0",
-    "github-file-browser": "0.6.1",
     "gtfs2geojson": "^1.0.0",
     "jsonlint": "1.6.0",
     "leaflet-draw": "0.2.3",
@@ -30,6 +31,7 @@
     "mapbox.js": "2.2.2",
     "marked": "0.3.2",
     "osmtogeojson": "2.0.5",
+    "polyline": "^0.2.0",
     "polytogeojson": "0.0.1",
     "qs-hash": "0.0.0",
     "shp-write": "0.2.3",
@@ -40,11 +42,11 @@
     "topojson": "1.6.8",
     "uglify-js": "2.4.1",
     "wellknown": "0.3.1",
+    "wkx": "^0.4.1",
     "xtend": "3.0.0"
   },
   "devDependencies": {
-    "brfs": "1.0.2",
-    "browserify": "4.1.11",
+    "browserify": "^14.0.0",
     "eslint": "^1.10.3",
     "tape": "~2.12.3"
   },
@@ -58,7 +60,7 @@
     "url": "git://github.com/mapbox/geojson.io.git"
   },
   "author": "MapBox",
-  "license": "BSD",
+  "license": "ISC",
   "bugs": {
     "url": "https://github.com/mapbox/geojson.io/issues"
   },

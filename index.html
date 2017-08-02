@@ -34,14 +34,7 @@
       ;
     connect-src
       'self'
-      https://www.mapbox.com
-      https://localhostauth.herokuapp.com/
-      https://geojsonioauth.herokuapp.com/
-      https://api.github.com/
-      https://*.tiles.mapbox.com
-      https://api.mapbox.com
-      https://api.segment.io
-      https://app.getsentry.com
+      *
       ;
     font-src
       'self'
@@ -52,16 +45,7 @@
     img-src
       'self'
       data:
-      blob:
-      https://www.mapbox.com
-      https://*.tiles.mapbox.com
-      https://api.mapbox.com
-      https://www.gravatar.com
-      https://secure.gaug.es
-      https://app.getsentry.com
-      https://a.tile.thunderforest.com/
-      https://a.tile.openstreetmap.org/
-      https://www.google-analytics.com
+      *
       ;
     script-src
       'self'
@@ -112,16 +96,13 @@ if (self == top) {
 <script type='text/javascript'>
 if (/a\.tiles\.mapbox\.com/.test(L.mapbox.config.HTTP_URL)) {
   var _gauges = _gauges || [];
-  (function() {
-    var t   = document.createElement('script');
-    t.type  = 'text/javascript';
-    t.async = true;
-    t.id    = 'gauges-tracker';
-    t.setAttribute('data-site-id', '51eee846108d7b2871000081');
-    t.src = 'https://secure.gaug.es/track.js';
-    var s = document.getElementsByTagName('script')[0];
-    s.parentNode.insertBefore(t, s);
-  })();
+  (function(i,s,o,g,r,a,m){i['GoogleAnalyticsObject']=r;i[r]=i[r]||function(){
+  (i[r].q=i[r].q||[]).push(arguments)},i[r].l=1*new Date();a=s.createElement(o),
+  m=s.getElementsByTagName(o)[0];a.async=1;a.src=g;m.parentNode.insertBefore(a,m)
+  })(window,document,'script','https://www.google-analytics.com/analytics.js','ga');
+
+  ga('create', 'UA-12158002-18', 'auto');
+  ga('send', 'pageview');
 }
 </script>
 </body>

@@ -4,6 +4,7 @@ require('../lib/custom_hash.js');
 var popup = require('../lib/popup'),
     escape = require('escape-html'),
     LGeo = require('leaflet-geodesy'),
+    geojsonRewind = require('geojson-rewind'),
     writable = false,
     showStyle = true,
     makiValues = require('../../data/maki.json'),
@@ -24,6 +25,7 @@ module.exports = function(context, readonly) {
                 position: 'topright'
             }));
 
+        L.control.scale().setPosition('bottomright').addTo(context.map);
         context.map.zoomControl.setPosition('topright');
 
         L.hash(context.map);
@@ -56,7 +58,9 @@ module.exports = function(context, readonly) {
         context.map.attributionControl.setPrefix('<a target="_blank" href="http://tmcw.wufoo.com/forms/z7x4m1/">Feedback</a> | <a target="_blank" href="http://geojson.io/about.html">About</a>');
 
         function update() {
-            geojsonToLayer(context.mapLayer.toGeoJSON(), context.mapLayer);
+            var geojson = context.mapLayer.toGeoJSON();
+            geojson = geojsonRewind(geojson);
+            geojsonToLayer(geojson, context.mapLayer);
             context.data.set({map: layerToGeoJSON(context.mapLayer)}, 'map');
         }
 
@@ -109,7 +113,12 @@ function bindPopup(l) {
     // Steer clear of XSS
     for (var k in props) {
         var e = escape(k);
-        properties[e] = escape(props[k]);
+        // users don't want to see "[object Object]"
+        if (typeof props[k] === 'object') {
+          properties[e] = escape(JSON.stringify(props[k]));
+        } else {
+          properties[e] = escape(props[k]);
+        }
     }
 
     if (!properties) return;

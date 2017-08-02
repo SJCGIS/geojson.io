@@ -21,7 +21,7 @@ module.exports = function(context) {
             // Committed to GitHub
             message = 'Changes committed to GitHub: ';
             url = res.commit.html_url;
-            path = res.commit.sha.substring(0,10);
+            path = res.commit.sha.substring(0, 10);
         } else {
             // Saved as a file
             message = 'Changes saved to disk.';
